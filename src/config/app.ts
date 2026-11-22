@@ -2,7 +2,7 @@ export const APP = {
   name: "Zenbook ERP",
   defaultLocale: "en-US",
   defaultTimezone: "UTC",
-  defaultCurrency: "USD",
+  defaultCurrency: "INR",
   defaultInvoiceDueDays: 30,
   defaultInvoicePrefix: "INV",
   defaultPaymentPrefix: "PAY",
@@ -18,4 +18,8 @@ export const ROUTES = {
   invoiceNew: "/invoices/new",
   invoiceDetail: (id: string) => `/invoices/${id}`,
   invoiceEdit: (id: string) => `/invoices/${id}/edit`,
+  customers: "/customers",
+  products: "/products",
+  reports: "/reports",
+  dashboard: "/dashboard",
 } as const;

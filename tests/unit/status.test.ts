@@ -13,6 +13,13 @@ describe("invoice status machine", () => {
     expect(canTransition("CANCELLED", "SEND")).toBe(false);
   });
 
+  it("allows full payment to move directly from issued and partially paid states", () => {
+    expect(transition("SENT", "PAY")).toBe("PAID");
+    expect(transition("VIEWED", "PAY")).toBe("PAID");
+    expect(transition("PARTIALLY_PAID", "PAY")).toBe("PAID");
+    expect(canTransition("DRAFT", "PAY")).toBe(false);
+  });
+
   it("rejects invalid transitions with a domain error", () => {
     expect(() => transition("PAID", "CANCEL")).toThrow(/Cannot cancel/i);
     expect(isEditable("DRAFT")).toBe(true);

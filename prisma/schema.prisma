@@ -64,6 +64,38 @@ enum TaxType {
   OTHER
 }
 
+enum TaxComponent {
+  CGST
+  SGST
+  IGST
+  GST
+  VAT
+  SALES_TAX
+  OTHER
+}
+
+enum CurrencyCode {
+  INR
+  USD
+  EUR
+  GBP
+  AED
+}
+
+enum ReportType {
+  SALES
+  REVENUE
+  GST
+  OUTSTANDING
+  CUSTOMER_REVENUE
+}
+
+enum ReportStatus {
+  READY
+  GENERATING
+  FAILED
+}
+
 enum DocumentType {
   INVOICE
   ESTIMATE
@@ -126,6 +158,7 @@ enum EntityType {
   WAREHOUSE
   INVENTORY_MOVEMENT
   AUDIT_LOG
+  REPORT
 }
 
 enum AuditAction {
@@ -161,7 +194,9 @@ model Organization {
   slug             String             @unique
   legalName        String?
   taxId            String?
-  baseCurrencyCode String             @db.VarChar(3)
+  gstin            String?            @db.VarChar(15)
+  stateCode        String?            @db.VarChar(2)
+  baseCurrencyCode CurrencyCode       @default(INR)
   locale           String             @default("en-US")
   timezone         String             @default("UTC")
   status           OrganizationStatus @default(ACTIVE)
@@ -169,24 +204,27 @@ model Organization {
   updatedAt        DateTime           @updatedAt
   deletedAt        DateTime?
 
-  settings         OrganizationSetting?
-  branches         Branch[]
-  memberships      OrganizationMembership[]
-  roles            Role[]
+  settings            OrganizationSetting?
+  branches            Branch[]
+  memberships         OrganizationMembership[]
+  roles               Role[]
   permissionOverrides UserPermissionOverride[]
-  customers        Customer[]
-  products         Product[]
-  taxes            Tax[]
-  numberSequences  NumberSequence[]
-  invoices         Invoice[]
-  payments         Payment[]
-  exchangeRates    ExchangeRate[]
-  auditLogs        AuditLog[]
-  attachments      Attachment[]
-  emailOutbox      EmailOutbox[]
-  bankAccounts     BankAccount[]
-  warehouses       Warehouse[]
-  inventoryMovements InventoryMovement[]
+  customers           Customer[]
+  customerAddresses   CustomerAddress[]
+  products            Product[]
+  taxes               Tax[]
+  numberSequences     NumberSequence[]
+  invoices            Invoice[]
+  payments            Payment[]
+  exchangeRates       ExchangeRate[]
+  auditLogs           AuditLog[]
+  attachments         Attachment[]
+  emailOutbox         EmailOutbox[]
+  bankAccounts        BankAccount[]
+  warehouses          Warehouse[]
+  inventoryMovements  InventoryMovement[]
+  reports             Report[]
+  reportInvoices      ReportInvoice[]
 
   @@index([status, createdAt(sort: Desc)])
 }
@@ -195,7 +233,7 @@ model OrganizationSetting {
   id                   String       @id @default(uuid()) @db.Uuid
   organizationId       String       @unique @db.Uuid
   organization         Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  defaultCurrencyCode  String       @db.VarChar(3)
+  defaultCurrencyCode  CurrencyCode @default(INR)
   fiscalYearStartMonth Int          @default(1)
   invoicePrefix        String       @default("INV")
   invoiceDueDays       Int          @default(30)
@@ -207,69 +245,72 @@ model OrganizationSetting {
 }
 
 model Branch {
-  id                     String       @id @default(uuid()) @db.Uuid
-  organizationId         String       @db.Uuid
-  organization           Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
-  name                   String
-  code                   String
-  addressLine1           String?
-  addressLine2           String?
-  city                   String?
-  state                  String?
-  postalCode             String?
-  countryCode            String?      @db.VarChar(2)
-  taxRegistrationNumber  String?
-  isPrimary              Boolean      @default(false)
-  createdAt              DateTime     @default(now())
-  updatedAt              DateTime     @updatedAt
-  deletedAt              DateTime?
-  invoices               Invoice[]
-  numberSequences        NumberSequence[]
-  warehouses             Warehouse[]
+  id                    String           @id @default(uuid()) @db.Uuid
+  organizationId        String           @db.Uuid
+  organization          Organization     @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  name                  String
+  code                  String
+  addressLine1          String?
+  addressLine2          String?
+  city                  String?
+  state                 String?
+  stateCode             String?          @db.VarChar(2)
+  postalCode            String?
+  countryCode           String?          @db.VarChar(2)
+  taxRegistrationNumber String?
+  gstin                 String?          @db.VarChar(15)
+  isPrimary             Boolean          @default(false)
+  createdAt             DateTime         @default(now())
+  updatedAt             DateTime         @updatedAt
+  deletedAt             DateTime?
+  invoices              Invoice[]
+  numberSequences       NumberSequence[]
+  warehouses            Warehouse[]
 
   @@unique([organizationId, code])
   @@index([organizationId, createdAt(sort: Desc)])
 }
 
 model User {
-  id                String                    @id @default(uuid()) @db.Uuid
-  email             String                    @unique
-  name              String
-  passwordHash      String?
-  avatarUrl         String?
-  status            UserStatus                @default(ACTIVE)
-  locale            String                    @default("en-US")
-  timezone          String                    @default("UTC")
-  createdAt         DateTime                  @default(now())
-  updatedAt         DateTime                  @updatedAt
-  deletedAt         DateTime?
+  id           String     @id @default(uuid()) @db.Uuid
+  email        String     @unique
+  name         String
+  passwordHash String?
+  avatarUrl    String?
+  status       UserStatus @default(ACTIVE)
+  locale       String     @default("en-US")
+  timezone     String     @default("UTC")
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+  deletedAt    DateTime?
 
-  memberships       OrganizationMembership[]
-  createdInvoices   Invoice[]                 @relation("InvoiceCreatedBy")
-  approvedInvoices  Invoice[]                 @relation("InvoiceApprovedBy")
-  sentInvoices      Invoice[]                 @relation("InvoiceSentBy")
-  createdRevisions  InvoiceRevision[]         @relation("RevisionChangedBy")
-  createdPayments   Payment[]                 @relation("PaymentCreatedBy")
+  memberships         OrganizationMembership[]
+  createdInvoices     Invoice[]                @relation("InvoiceCreatedBy")
+  approvedInvoices    Invoice[]                @relation("InvoiceApprovedBy")
+  sentInvoices        Invoice[]                @relation("InvoiceSentBy")
+  createdRevisions    InvoiceRevision[]        @relation("RevisionChangedBy")
+  createdPayments     Payment[]                @relation("PaymentCreatedBy")
+  createdReports      Report[]                 @relation("ReportCreatedBy")
   permissionOverrides UserPermissionOverride[]
-  invoiceEvents     InvoiceEvent[]            @relation("InvoiceEventActor")
-  auditLogs         AuditLog[]
-  attachments       Attachment[]
+  invoiceEvents       InvoiceEvent[]           @relation("InvoiceEventActor")
+  auditLogs           AuditLog[]
+  attachments         Attachment[]
 
   @@index([status])
 }
 
 model OrganizationMembership {
-  id             String          @id @default(uuid()) @db.Uuid
-  organizationId String          @db.Uuid
-  organization   Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  userId         String          @db.Uuid
-  user           User            @relation(fields: [userId], references: [id], onDelete: Cascade)
-  status         MembershipStatus @default(ACTIVE)
-  title          String?
-  createdAt      DateTime        @default(now())
-  updatedAt      DateTime        @updatedAt
-  deletedAt      DateTime?
-  roles          MembershipRole[]
+  id                  String                   @id @default(uuid()) @db.Uuid
+  organizationId      String                   @db.Uuid
+  organization        Organization             @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  userId              String                   @db.Uuid
+  user                User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  status              MembershipStatus         @default(ACTIVE)
+  title               String?
+  createdAt           DateTime                 @default(now())
+  updatedAt           DateTime                 @updatedAt
+  deletedAt           DateTime?
+  roles               MembershipRole[]
   permissionOverrides UserPermissionOverride[]
 
   @@unique([organizationId, userId])
@@ -277,15 +318,15 @@ model OrganizationMembership {
 }
 
 model Role {
-  id             String                 @id @default(uuid()) @db.Uuid
-  organizationId String                 @db.Uuid
-  organization   Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  id             String                   @id @default(uuid()) @db.Uuid
+  organizationId String                   @db.Uuid
+  organization   Organization             @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   key            String
   name           String
   description    String?
-  isSystem       Boolean                @default(false)
-  createdAt      DateTime               @default(now())
-  updatedAt      DateTime               @updatedAt
+  isSystem       Boolean                  @default(false)
+  createdAt      DateTime                 @default(now())
+  updatedAt      DateTime                 @updatedAt
   deletedAt      DateTime?
   memberships    MembershipRole[]
   permissions    RolePermission[]
@@ -352,7 +393,9 @@ model Customer {
   email            String?
   phone            String?
   taxId            String?
-  currencyCode     String?           @db.VarChar(3)
+  gstin            String?           @db.VarChar(15)
+  stateCode        String?           @db.VarChar(2)
+  currencyCode     CurrencyCode?     @default(INR)
   paymentTermsDays Int?
   status           CustomerStatus    @default(ACTIVE)
   createdAt        DateTime          @default(now())
@@ -370,6 +413,7 @@ model Customer {
 model CustomerAddress {
   id              String       @id @default(uuid()) @db.Uuid
   organizationId  String       @db.Uuid
+  organization    Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   customerId      String       @db.Uuid
   customer        Customer     @relation(fields: [customerId], references: [id], onDelete: Cascade)
   type            AddressType
@@ -377,6 +421,7 @@ model CustomerAddress {
   line2           String?
   city            String
   state           String?
+  stateCode       String?      @db.VarChar(2)
   postalCode      String?
   countryCode     String       @db.VarChar(2)
   taxJurisdiction String?
@@ -388,22 +433,23 @@ model CustomerAddress {
 }
 
 model Product {
-  id              String      @id @default(uuid()) @db.Uuid
-  organizationId  String      @db.Uuid
-  organization    Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
-  sku             String
-  name            String
-  description     String?
-  type            ProductType @default(SERVICE)
-  unitOfMeasure   String      @default("ea")
-  salePrice       Decimal     @default(0) @db.Decimal(19, 4)
-  currencyCode    String      @db.VarChar(3)
-  isTaxable       Boolean     @default(true)
-  status          CustomerStatus @default(ACTIVE)
-  createdAt       DateTime    @default(now())
-  updatedAt       DateTime    @updatedAt
-  deletedAt       DateTime?
-  invoiceItems    InvoiceItem[]
+  id                 String              @id @default(uuid()) @db.Uuid
+  organizationId     String              @db.Uuid
+  organization       Organization        @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  sku                String
+  name               String
+  description        String?
+  type               ProductType         @default(SERVICE)
+  unitOfMeasure      String              @default("ea")
+  salePrice          Decimal             @default(0) @db.Decimal(19, 4)
+  currencyCode       CurrencyCode        @default(INR)
+  hsnSac             String?             @db.VarChar(20)
+  isTaxable          Boolean             @default(true)
+  status             CustomerStatus      @default(ACTIVE)
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+  deletedAt          DateTime?
+  invoiceItems       InvoiceItem[]
   inventoryMovements InventoryMovement[]
 
   @@unique([organizationId, sku])
@@ -411,46 +457,48 @@ model Product {
 }
 
 model Tax {
-  id                  String            @id @default(uuid()) @db.Uuid
-  organizationId      String            @db.Uuid
-  organization        Organization      @relation(fields: [organizationId], references: [id], onDelete: Restrict)
-  name                String
-  rate                Decimal           @db.Decimal(9, 6)
-  type                TaxType
-  jurisdiction        String            @default("DEFAULT")
-  isCompound          Boolean           @default(false)
-  isInclusive         Boolean           @default(false)
-  status              CustomerStatus    @default(ACTIVE)
-  createdAt           DateTime          @default(now())
-  updatedAt           DateTime          @updatedAt
-  deletedAt           DateTime?
-  invoiceItemTaxes    InvoiceItemTax[]
+  id               String           @id @default(uuid()) @db.Uuid
+  organizationId   String           @db.Uuid
+  organization     Organization     @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  name             String
+  rate             Decimal          @db.Decimal(9, 6)
+  type             TaxType
+  component        TaxComponent?
+  jurisdiction     String           @default("DEFAULT")
+  stateCode        String?          @db.VarChar(2)
+  isCompound       Boolean          @default(false)
+  isInclusive      Boolean          @default(false)
+  status           CustomerStatus   @default(ACTIVE)
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+  deletedAt        DateTime?
+  invoiceItemTaxes InvoiceItemTax[]
 
   @@unique([organizationId, name, jurisdiction])
   @@index([organizationId, type])
 }
 
 model Currency {
-  code          String   @id @db.VarChar(3)
+  code          String  @id @db.VarChar(3)
   name          String
   symbol        String
-  decimalPlaces Int      @default(2)
-  isActive      Boolean  @default(true)
+  decimalPlaces Int     @default(2)
+  isActive      Boolean @default(true)
 }
 
 model ExchangeRate {
-  id                String       @id @default(uuid()) @db.Uuid
-  organizationId    String?      @db.Uuid
-  organization      Organization? @relation(fields: [organizationId], references: [id], onDelete: SetNull)
-  fromCurrencyCode  String       @db.VarChar(3)
-  toCurrencyCode    String       @db.VarChar(3)
-  rate              Decimal      @db.Decimal(19, 8)
-  rateDate          DateTime     @db.Date
-  source            String       @default("MANUAL")
-  createdAt         DateTime     @default(now())
+  id               String       @id @default(uuid()) @db.Uuid
+  organizationId   String       @db.Uuid
+  organization     Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  fromCurrencyCode CurrencyCode
+  toCurrencyCode   CurrencyCode
+  rate             Decimal      @db.Decimal(19, 8)
+  rateDate         DateTime     @db.Date
+  source           String       @default("MANUAL")
+  createdAt        DateTime     @default(now())
 
-  @@unique([fromCurrencyCode, toCurrencyCode, rateDate])
-  @@index([organizationId, rateDate(sort: Desc)])
+  @@unique([organizationId, fromCurrencyCode, toCurrencyCode, rateDate])
+  @@index([organizationId, toCurrencyCode, rateDate(sort: Desc)])
 }
 
 model NumberSequence {
@@ -474,109 +522,135 @@ model NumberSequence {
 }
 
 model Invoice {
-  id                String         @id @default(uuid()) @db.Uuid
-  organizationId    String         @db.Uuid
-  organization      Organization   @relation(fields: [organizationId], references: [id], onDelete: Restrict)
-  customerId        String         @db.Uuid
-  customer          Customer       @relation(fields: [customerId], references: [id], onDelete: Restrict)
-  branchId          String?        @db.Uuid
-  branch            Branch?        @relation(fields: [branchId], references: [id], onDelete: SetNull)
-  invoiceNumber     String
-  status            InvoiceStatus  @default(DRAFT)
-  version           Int            @default(1)
-  currencyCode      String         @db.VarChar(3)
-  baseCurrencyCode  String         @db.VarChar(3)
-  exchangeRate      Decimal        @default(1) @db.Decimal(19, 8)
-  issueDate         DateTime       @db.Date
-  dueDate           DateTime       @db.Date
-  reference         String?
-  notes             String?
-  terms             String?
-  footer            String?
-  subtotal          Decimal        @default(0) @db.Decimal(19, 4)
-  discountAmount    Decimal        @default(0) @db.Decimal(19, 4)
-  taxAmount         Decimal        @default(0) @db.Decimal(19, 4)
-  total             Decimal        @default(0) @db.Decimal(19, 4)
-  amountPaid        Decimal        @default(0) @db.Decimal(19, 4)
-  balanceDue        Decimal        @default(0) @db.Decimal(19, 4)
-  sentAt            DateTime?
-  viewedAt          DateTime?
-  cancelledAt       DateTime?
-  cancelReason      String?
-  createdById       String         @db.Uuid
-  createdBy         User           @relation("InvoiceCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
-  approvedById      String?        @db.Uuid
-  approvedBy        User?          @relation("InvoiceApprovedBy", fields: [approvedById], references: [id], onDelete: SetNull)
-  sentById          String?        @db.Uuid
-  sentBy            User?          @relation("InvoiceSentBy", fields: [sentById], references: [id], onDelete: SetNull)
-  createdAt         DateTime       @default(now())
-  updatedAt         DateTime       @updatedAt
-  deletedAt         DateTime?
-  items             InvoiceItem[]
-  events            InvoiceEvent[]
-  revisions         InvoiceRevision[]
-  applications      PaymentApplication[]
-  emailOutbox       EmailOutbox[]
+  id                   String               @id @default(uuid()) @db.Uuid
+  organizationId       String               @db.Uuid
+  organization         Organization         @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  customerId           String               @db.Uuid
+  customer             Customer             @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  branchId             String?              @db.Uuid
+  branch               Branch?              @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  invoiceNumber        String
+  status               InvoiceStatus        @default(DRAFT)
+  version              Int                  @default(1)
+  currencyCode         CurrencyCode         @default(INR)
+  baseCurrencyCode     CurrencyCode         @default(INR)
+  exchangeRate         Decimal              @default(1) @db.Decimal(19, 8)
+  gstin                String?              @db.VarChar(15)
+  sourceStateCode      String?              @db.VarChar(2)
+  destinationStateCode String?              @db.VarChar(2)
+  placeOfSupplyCode    String?              @db.VarChar(2)
+  isReverseCharge      Boolean              @default(false)
+  issueDate            DateTime             @db.Date
+  dueDate              DateTime             @db.Date
+  reference            String?
+  notes                String?
+  terms                String?
+  footer               String?
+  subtotal             Decimal              @default(0) @db.Decimal(19, 4)
+  discountAmount       Decimal              @default(0) @db.Decimal(19, 4)
+  taxableAmount        Decimal              @default(0) @db.Decimal(19, 4)
+  shippingAmount       Decimal              @default(0) @db.Decimal(19, 4)
+  roundOffAmount       Decimal              @default(0) @db.Decimal(19, 4)
+  cgstAmount           Decimal              @default(0) @db.Decimal(19, 4)
+  sgstAmount           Decimal              @default(0) @db.Decimal(19, 4)
+  igstAmount           Decimal              @default(0) @db.Decimal(19, 4)
+  taxAmount            Decimal              @default(0) @db.Decimal(19, 4)
+  total                Decimal              @default(0) @db.Decimal(19, 4)
+  amountPaid           Decimal              @default(0) @db.Decimal(19, 4)
+  balanceDue           Decimal              @default(0) @db.Decimal(19, 4)
+  sentAt               DateTime?
+  viewedAt             DateTime?
+  cancelledAt          DateTime?
+  cancelReason         String?
+  createdById          String               @db.Uuid
+  createdBy            User                 @relation("InvoiceCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  approvedById         String?              @db.Uuid
+  approvedBy           User?                @relation("InvoiceApprovedBy", fields: [approvedById], references: [id], onDelete: SetNull)
+  sentById             String?              @db.Uuid
+  sentBy               User?                @relation("InvoiceSentBy", fields: [sentById], references: [id], onDelete: SetNull)
+  createdAt            DateTime             @default(now())
+  updatedAt            DateTime             @updatedAt
+  deletedAt            DateTime?
+  items                InvoiceItem[]
+  events               InvoiceEvent[]
+  revisions            InvoiceRevision[]
+  applications         PaymentApplication[]
+  payments             Payment[]            @relation("InvoicePayments")
+  reportInvoices       ReportInvoice[]
+  emailOutbox          EmailOutbox[]
 
   @@unique([organizationId, invoiceNumber])
   @@index([organizationId, createdAt(sort: Desc), id(sort: Desc)])
   @@index([organizationId, status, dueDate])
   @@index([organizationId, customerId, createdAt(sort: Desc)])
   @@index([organizationId, status, balanceDue, dueDate])
+  @@index([organizationId, issueDate(sort: Desc), id(sort: Desc)])
+  @@index([organizationId, invoiceNumber])
+  @@index([organizationId, total(sort: Desc)])
+  @@index([organizationId, deletedAt, issueDate(sort: Desc)])
 }
 
 model InvoiceItem {
-  id               String            @id @default(uuid()) @db.Uuid
-  organizationId   String            @db.Uuid
-  invoiceId        String            @db.Uuid
-  invoice          Invoice           @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
-  productId        String?           @db.Uuid
-  product          Product?          @relation(fields: [productId], references: [id], onDelete: SetNull)
-  position         Int
-  description      String
-  skuSnapshot      String?
-  unitOfMeasure    String            @default("ea")
-  quantity         Decimal           @db.Decimal(19, 4)
-  unitPrice        Decimal           @db.Decimal(19, 4)
-  discountPercent  Decimal           @default(0) @db.Decimal(9, 4)
-  discountAmount   Decimal           @default(0) @db.Decimal(19, 4)
-  taxable          Boolean           @default(true)
-  taxAmount        Decimal           @default(0) @db.Decimal(19, 4)
-  amount           Decimal           @db.Decimal(19, 4)
-  createdAt        DateTime          @default(now())
-  updatedAt        DateTime          @updatedAt
-  taxes            InvoiceItemTax[]
+  id              String           @id @default(uuid()) @db.Uuid
+  organizationId  String           @db.Uuid
+  invoiceId       String           @db.Uuid
+  invoice         Invoice          @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  productId       String?          @db.Uuid
+  product         Product?         @relation(fields: [productId], references: [id], onDelete: Restrict)
+  position        Int
+  description     String
+  skuSnapshot     String?
+  hsnSac          String?          @db.VarChar(20)
+  unitOfMeasure   String           @default("ea")
+  quantity        Decimal          @db.Decimal(19, 4)
+  unitPrice       Decimal          @db.Decimal(19, 4)
+  discountPercent Decimal          @default(0) @db.Decimal(9, 4)
+  discountAmount  Decimal          @default(0) @db.Decimal(19, 4)
+  taxable         Boolean          @default(true)
+  taxableAmount   Decimal          @default(0) @db.Decimal(19, 4)
+  cgstAmount      Decimal          @default(0) @db.Decimal(19, 4)
+  sgstAmount      Decimal          @default(0) @db.Decimal(19, 4)
+  igstAmount      Decimal          @default(0) @db.Decimal(19, 4)
+  taxAmount       Decimal          @default(0) @db.Decimal(19, 4)
+  amount          Decimal          @db.Decimal(19, 4)
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  taxes           InvoiceItemTax[]
 
   @@unique([invoiceId, position])
   @@index([organizationId, invoiceId])
+  @@index([organizationId, productId])
 }
 
 model InvoiceItemTax {
-  id                 String       @id @default(uuid()) @db.Uuid
-  organizationId     String       @db.Uuid
-  invoiceItemId      String       @db.Uuid
-  invoiceItem        InvoiceItem  @relation(fields: [invoiceItemId], references: [id], onDelete: Cascade)
-  taxId              String       @db.Uuid
-  tax                Tax          @relation(fields: [taxId], references: [id], onDelete: Restrict)
-  nameSnapshot       String
-  rateSnapshot       Decimal      @db.Decimal(9, 6)
-  amount             Decimal      @db.Decimal(19, 4)
-  createdAt          DateTime     @default(now())
+  id             String        @id @default(uuid()) @db.Uuid
+  organizationId String        @db.Uuid
+  invoiceItemId  String        @db.Uuid
+  invoiceItem    InvoiceItem   @relation(fields: [invoiceItemId], references: [id], onDelete: Cascade)
+  taxId          String        @db.Uuid
+  tax            Tax           @relation(fields: [taxId], references: [id], onDelete: Restrict)
+  nameSnapshot   String
+  component      TaxComponent?
+  rateSnapshot   Decimal       @db.Decimal(9, 6)
+  taxableAmount  Decimal       @default(0) @db.Decimal(19, 4)
+  amount         Decimal       @db.Decimal(19, 4)
+  createdAt      DateTime      @default(now())
 
   @@unique([invoiceItemId, taxId])
+  @@index([organizationId, component])
 }
 
 model InvoiceRevision {
-  id            String   @id @default(uuid()) @db.Uuid
-  organizationId String  @db.Uuid
-  invoiceId     String   @db.Uuid
-  invoice       Invoice  @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
-  version       Int
-  reason        String?
-  snapshot      Json
-  changedById   String   @db.Uuid
-  changedBy     User     @relation("RevisionChangedBy", fields: [changedById], references: [id], onDelete: Restrict)
-  createdAt     DateTime @default(now())
+  id             String   @id @default(uuid()) @db.Uuid
+  organizationId String   @db.Uuid
+  invoiceId      String   @db.Uuid
+  invoice        Invoice  @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  version        Int
+  reason         String?
+  snapshot       Json
+  changedById    String   @db.Uuid
+  changedBy      User     @relation("RevisionChangedBy", fields: [changedById], references: [id], onDelete: Restrict)
+  createdAt      DateTime @default(now())
 
   @@unique([invoiceId, version])
 }
@@ -597,28 +671,35 @@ model InvoiceEvent {
 }
 
 model Payment {
-  id                String        @id @default(uuid()) @db.Uuid
-  organizationId    String        @db.Uuid
-  organization      Organization  @relation(fields: [organizationId], references: [id], onDelete: Restrict)
-  customerId        String        @db.Uuid
-  customer          Customer      @relation(fields: [customerId], references: [id], onDelete: Restrict)
-  paymentNumber     String
-  amount            Decimal       @db.Decimal(19, 4)
-  unappliedAmount   Decimal       @default(0) @db.Decimal(19, 4)
-  currencyCode      String        @db.VarChar(3)
-  paidAt            DateTime      @db.Date
-  method            PaymentMethod
-  reference         String?
-  status            PaymentStatus @default(COMPLETED)
-  createdById       String        @db.Uuid
-  createdBy         User          @relation("PaymentCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
-  createdAt         DateTime      @default(now())
-  updatedAt         DateTime      @updatedAt
-  deletedAt         DateTime?
-  applications      PaymentApplication[]
+  id                   String               @id @default(uuid()) @db.Uuid
+  organizationId       String               @db.Uuid
+  organization         Organization         @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  customerId           String               @db.Uuid
+  customer             Customer             @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  invoiceId            String?              @db.Uuid
+  invoice              Invoice?             @relation("InvoicePayments", fields: [invoiceId], references: [id], onDelete: Restrict)
+  paymentNumber        String
+  amount               Decimal              @db.Decimal(19, 4)
+  unappliedAmount      Decimal              @default(0) @db.Decimal(19, 4)
+  currencyCode         CurrencyCode         @default(INR)
+  baseCurrencyCode     CurrencyCode         @default(INR)
+  exchangeRate         Decimal              @default(1) @db.Decimal(19, 8)
+  amountInBaseCurrency Decimal              @default(0) @db.Decimal(19, 4)
+  paidAt               DateTime             @db.Date
+  method               PaymentMethod
+  reference            String?
+  status               PaymentStatus        @default(COMPLETED)
+  createdById          String               @db.Uuid
+  createdBy            User                 @relation("PaymentCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  createdAt            DateTime             @default(now())
+  updatedAt            DateTime             @updatedAt
+  deletedAt            DateTime?
+  applications         PaymentApplication[]
 
   @@unique([organizationId, paymentNumber])
   @@index([organizationId, customerId, paidAt(sort: Desc)])
+  @@index([organizationId, invoiceId, paidAt(sort: Desc)])
+  @@index([organizationId, status, paidAt(sort: Desc)])
 }
 
 model PaymentApplication {
@@ -632,7 +713,42 @@ model PaymentApplication {
   createdAt      DateTime @default(now())
 
   @@unique([paymentId, invoiceId])
-  @@index([invoiceId])
+  @@index([organizationId, invoiceId])
+  @@index([organizationId, paymentId])
+}
+
+model Report {
+  id             String          @id @default(uuid()) @db.Uuid
+  organizationId String          @db.Uuid
+  organization   Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  type           ReportType
+  name           String
+  parameters     Json
+  status         ReportStatus    @default(READY)
+  generatedAt    DateTime?
+  createdById    String          @db.Uuid
+  createdBy      User            @relation("ReportCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  deletedAt      DateTime?
+  invoices       ReportInvoice[]
+
+  @@index([organizationId, type, createdAt(sort: Desc)])
+  @@index([organizationId, deletedAt])
+}
+
+model ReportInvoice {
+  id             String       @id @default(uuid()) @db.Uuid
+  organizationId String       @db.Uuid
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  reportId       String       @db.Uuid
+  report         Report       @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  invoiceId      String       @db.Uuid
+  invoice        Invoice      @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  createdAt      DateTime     @default(now())
+
+  @@unique([reportId, invoiceId])
+  @@index([organizationId, invoiceId])
 }
 
 model AuditLog {
@@ -695,33 +811,33 @@ model EmailOutbox {
 }
 
 model BankAccount {
-  id                 String            @id @default(uuid()) @db.Uuid
-  organizationId     String            @db.Uuid
-  organization       Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  name               String
-  institution        String?
+  id                  String            @id @default(uuid()) @db.Uuid
+  organizationId      String            @db.Uuid
+  organization        Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  name                String
+  institution         String?
   accountNumberMasked String?
-  currencyCode       String            @db.VarChar(3)
-  isActive           Boolean           @default(true)
-  createdAt          DateTime          @default(now())
-  updatedAt          DateTime          @updatedAt
-  transactions       BankTransaction[]
+  currencyCode        String            @db.VarChar(3)
+  isActive            Boolean           @default(true)
+  createdAt           DateTime          @default(now())
+  updatedAt           DateTime          @updatedAt
+  transactions        BankTransaction[]
 
   @@unique([organizationId, name])
 }
 
 model BankTransaction {
-  id              String        @id @default(uuid()) @db.Uuid
-  organizationId  String        @db.Uuid
-  bankAccountId   String        @db.Uuid
-  bankAccount     BankAccount   @relation(fields: [bankAccountId], references: [id], onDelete: Cascade)
-  externalId      String
-  postedAt        DateTime
-  description     String
-  amount          Decimal       @db.Decimal(19, 4)
-  currencyCode    String        @db.VarChar(3)
-  isReconciled    Boolean       @default(false)
-  createdAt       DateTime      @default(now())
+  id             String      @id @default(uuid()) @db.Uuid
+  organizationId String      @db.Uuid
+  bankAccountId  String      @db.Uuid
+  bankAccount    BankAccount @relation(fields: [bankAccountId], references: [id], onDelete: Cascade)
+  externalId     String
+  postedAt       DateTime
+  description    String
+  amount         Decimal     @db.Decimal(19, 4)
+  currencyCode   String      @db.VarChar(3)
+  isReconciled   Boolean     @default(false)
+  createdAt      DateTime    @default(now())
 
   @@unique([organizationId, bankAccountId, externalId])
   @@index([organizationId, postedAt(sort: Desc)])

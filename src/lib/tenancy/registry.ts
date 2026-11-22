@@ -2,7 +2,8 @@ export const TENANT_MODELS = [
   "OrganizationSetting", "Branch", "OrganizationMembership", "Role",
   "UserPermissionOverride", "Customer", "CustomerAddress", "Product", "Tax",
   "NumberSequence", "Invoice", "InvoiceItem", "InvoiceItemTax", "InvoiceRevision",
-  "InvoiceEvent", "Payment", "PaymentApplication", "AuditLog", "Attachment",
+  "InvoiceEvent", "Payment", "PaymentApplication", "ExchangeRate", "Report",
+  "ReportInvoice", "AuditLog", "Attachment",
   "EmailOutbox", "BankAccount", "BankTransaction", "Warehouse", "InventoryMovement",
 ] as const;
 

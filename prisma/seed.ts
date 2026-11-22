@@ -23,21 +23,23 @@ async function main() {
       name: "Zenbook Demo Co.",
       slug: "zenbook-demo",
       legalName: "Zenbook Demo Co. Pty Ltd",
-      baseCurrencyCode: "USD",
+      baseCurrencyCode: "INR",
+      gstin: "27AABCZ1234M1Z5",
+      stateCode: "MH",
     },
-    update: {},
+    update: { baseCurrencyCode: "INR", gstin: "27AABCZ1234M1Z5", stateCode: "MH" },
   });
 
   await prisma.organizationSetting.upsert({
     where: { organizationId: ORGANIZATION_ID },
     create: {
       organizationId: ORGANIZATION_ID,
-      defaultCurrencyCode: "USD",
+      defaultCurrencyCode: "INR",
       invoicePrefix: "INV",
       invoiceDueDays: 30,
       invoiceTerms: "Payment due within 30 days.",
     },
-    update: {},
+    update: { defaultCurrencyCode: "INR" },
   });
 
   await prisma.user.upsert({
@@ -89,17 +91,19 @@ async function main() {
     where: { id: CUSTOMER_A },
     create: {
       id: CUSTOMER_A, organizationId: ORGANIZATION_ID, customerNumber: "CUST-0001",
-      displayName: "Acme Industries", email: "accounts@acme.example", currencyCode: "USD",
+      displayName: "Acme Industries", email: "accounts@acme.example", currencyCode: "INR",
+      stateCode: "MH", gstin: "27AACCA1234M1Z5",
     },
-    update: {},
+    update: { currencyCode: "INR", stateCode: "MH", gstin: "27AACCA1234M1Z5" },
   });
   await prisma.customer.upsert({
     where: { id: CUSTOMER_B },
     create: {
       id: CUSTOMER_B, organizationId: ORGANIZATION_ID, customerNumber: "CUST-0002",
-      displayName: "Northwind Studio", email: "billing@northwind.example", currencyCode: "USD",
+      displayName: "Northwind Studio", email: "billing@northwind.example", currencyCode: "INR",
+      stateCode: "KA", gstin: "29AABCN1234M1Z5",
     },
-    update: {},
+    update: { currencyCode: "INR", stateCode: "KA", gstin: "29AABCN1234M1Z5" },
   });
 
   await prisma.product.upsert({
@@ -107,27 +111,27 @@ async function main() {
     create: {
       id: PRODUCT_A, organizationId: ORGANIZATION_ID, sku: "SVC-CONSULT",
       name: "Consulting services", description: "Senior engineering consulting",
-      type: "SERVICE", salePrice: 150, currencyCode: "USD",
+      type: "SERVICE", salePrice: 150, currencyCode: "INR", hsnSac: "998314",
     },
-    update: {},
+    update: { salePrice: 150, currencyCode: "INR", hsnSac: "998314" },
   });
   await prisma.product.upsert({
     where: { id: PRODUCT_B },
     create: {
       id: PRODUCT_B, organizationId: ORGANIZATION_ID, sku: "SVC-DESIGN",
       name: "Design workshop", description: "Product design workshop",
-      type: "SERVICE", salePrice: 900, currencyCode: "USD",
+      type: "SERVICE", salePrice: 900, currencyCode: "INR", hsnSac: "998311",
     },
-    update: {},
+    update: { salePrice: 900, currencyCode: "INR", hsnSac: "998311" },
   });
 
   await prisma.tax.upsert({
     where: { id: TAX_GST },
     create: {
-      id: TAX_GST, organizationId: ORGANIZATION_ID, name: "Sales tax",
-      rate: 10, type: "SALES_TAX", jurisdiction: "DEFAULT",
+      id: TAX_GST, organizationId: ORGANIZATION_ID, name: "GST 18%",
+      rate: 18, type: "GST", component: "GST", jurisdiction: "DEFAULT",
     },
-    update: {},
+    update: { rate: 18, type: "GST", component: "GST" },
   });
   await prisma.tax.upsert({
     where: { id: TAX_VAT },
@@ -138,30 +142,67 @@ async function main() {
     update: {},
   });
 
+  const rateDate = new Date(new Date().toISOString().slice(0, 10));
+  const exchangeRates = [
+    { from: "INR", to: "USD", rate: 0.012 },
+    { from: "USD", to: "INR", rate: 83.3333 },
+    { from: "INR", to: "EUR", rate: 0.011 },
+    { from: "EUR", to: "INR", rate: 90.9091 },
+    { from: "INR", to: "GBP", rate: 0.0095 },
+    { from: "GBP", to: "INR", rate: 105.2632 },
+    { from: "INR", to: "AED", rate: 0.044 },
+    { from: "AED", to: "INR", rate: 22.7273 },
+  ] as const;
+  for (const item of exchangeRates) {
+    await prisma.exchangeRate.upsert({
+      where: {
+        organizationId_fromCurrencyCode_toCurrencyCode_rateDate: {
+          organizationId: ORGANIZATION_ID,
+          fromCurrencyCode: item.from,
+          toCurrencyCode: item.to,
+          rateDate,
+        },
+      },
+      create: {
+        organizationId: ORGANIZATION_ID,
+        fromCurrencyCode: item.from,
+        toCurrencyCode: item.to,
+        rate: item.rate,
+        rateDate,
+        source: "SEED",
+      },
+      update: { rate: item.rate, source: "SEED" },
+    });
+  }
+
   const now = new Date();
   const due = new Date(now.getTime() + 30 * 86_400_000);
   const pastDue = new Date(now.getTime() - 10 * 86_400_000);
 
   const invoices = [
     {
-      id: INVOICE_DRAFT, number: "INV-26-00001", customerId: CUSTOMER_A,
-      status: "DRAFT" as const, total: 1650, balanceDue: 1650, dueDate: due,
-      description: "Consulting services", quantity: 10, unitPrice: 150, taxId: TAX_GST, taxAmount: 150,
+      id: INVOICE_DRAFT, number: "INV-26-00001", customerId: CUSTOMER_A, customerStateCode: "MH",
+      status: "DRAFT" as const, total: 1770, balanceDue: 1770, dueDate: due,
+      description: "Consulting services", quantity: 10, unitPrice: 150, taxId: TAX_GST, taxAmount: 270,
+      cgstAmount: 135, sgstAmount: 135, igstAmount: 0,
     },
     {
-      id: INVOICE_SENT, number: "INV-26-00002", customerId: CUSTOMER_B,
-      status: "SENT" as const, total: 990, balanceDue: 990, dueDate: pastDue,
-      description: "Design workshop", quantity: 1, unitPrice: 900, taxId: TAX_GST, taxAmount: 90,
+      id: INVOICE_SENT, number: "INV-26-00002", customerId: CUSTOMER_B, customerStateCode: "KA",
+      status: "SENT" as const, total: 1062, balanceDue: 1062, dueDate: pastDue,
+      description: "Design workshop", quantity: 1, unitPrice: 900, taxId: TAX_GST, taxAmount: 162,
+      cgstAmount: 0, sgstAmount: 0, igstAmount: 162,
     },
     {
-      id: INVOICE_PARTIAL, number: "INV-26-00003", customerId: CUSTOMER_A,
-      status: "PARTIALLY_PAID" as const, total: 2200, balanceDue: 1200, dueDate: due,
-      description: "Consulting services", quantity: 20, unitPrice: 100, taxId: TAX_GST, taxAmount: 200,
+      id: INVOICE_PARTIAL, number: "INV-26-00003", customerId: CUSTOMER_A, customerStateCode: "MH",
+      status: "PARTIALLY_PAID" as const, total: 2360, balanceDue: 1360, dueDate: due,
+      description: "Consulting services", quantity: 20, unitPrice: 100, taxId: TAX_GST, taxAmount: 360,
+      cgstAmount: 180, sgstAmount: 180, igstAmount: 0,
     },
     {
-      id: INVOICE_PAID, number: "INV-26-00004", customerId: CUSTOMER_B,
-      status: "PAID" as const, total: 1100, balanceDue: 0, dueDate: due,
-      description: "Design workshop", quantity: 1, unitPrice: 1000, taxId: TAX_GST, taxAmount: 100,
+      id: INVOICE_PAID, number: "INV-26-00004", customerId: CUSTOMER_B, customerStateCode: "KA",
+      status: "PAID" as const, total: 1180, balanceDue: 0, dueDate: due,
+      description: "Design workshop", quantity: 1, unitPrice: 1000, taxId: TAX_GST, taxAmount: 180,
+      cgstAmount: 0, sgstAmount: 0, igstAmount: 180,
     },
   ];
 
@@ -169,7 +210,13 @@ async function main() {
     const existing = await prisma.invoice.findFirst({
       where: { organizationId: ORGANIZATION_ID, invoiceNumber: invoice.number },
     });
-    if (existing) continue;
+    if (existing) {
+      await prisma.invoiceItem.updateMany({
+        where: { invoiceId: existing.id, productId: null },
+        data: { productId: invoice.customerId === CUSTOMER_A ? PRODUCT_A : PRODUCT_B },
+      });
+      continue;
+    }
 
     await prisma.invoice.create({
       data: {
@@ -178,12 +225,20 @@ async function main() {
         customerId: invoice.customerId,
         invoiceNumber: invoice.number,
         status: invoice.status,
-        currencyCode: "USD",
-        baseCurrencyCode: "USD",
+        currencyCode: "INR",
+        baseCurrencyCode: "INR",
         exchangeRate: 1,
+        gstin: "27AABCZ1234M1Z5",
+        sourceStateCode: "MH",
+        destinationStateCode: invoice.customerStateCode,
         issueDate: now,
         dueDate: invoice.dueDate,
         subtotal: invoice.total - invoice.taxAmount,
+        discountAmount: 0,
+        taxableAmount: invoice.total - invoice.taxAmount,
+        cgstAmount: invoice.cgstAmount,
+        sgstAmount: invoice.sgstAmount,
+        igstAmount: invoice.igstAmount,
         taxAmount: invoice.taxAmount,
         total: invoice.total,
         amountPaid: invoice.total - invoice.balanceDue,
@@ -194,17 +249,23 @@ async function main() {
           create: {
             organizationId: ORGANIZATION_ID,
             position: 1,
+            productId: invoice.customerId === CUSTOMER_A ? PRODUCT_A : PRODUCT_B,
             description: invoice.description,
             quantity: invoice.quantity,
             unitPrice: invoice.unitPrice,
-            amount: invoice.total - invoice.taxAmount,
+            taxableAmount: invoice.total - invoice.taxAmount,
+            cgstAmount: invoice.cgstAmount,
+            sgstAmount: invoice.sgstAmount,
+            igstAmount: invoice.igstAmount,
+            amount: invoice.total,
             taxAmount: invoice.taxAmount,
             taxes: {
               create: {
                 organizationId: ORGANIZATION_ID,
                 taxId: invoice.taxId,
-                nameSnapshot: "Sales tax",
-                rateSnapshot: 10,
+                nameSnapshot: "GST 18%",
+                component: invoice.igstAmount > 0 ? "IGST" : "GST",
+                rateSnapshot: 18,
                 amount: invoice.taxAmount,
               },
             },
@@ -229,10 +290,14 @@ async function main() {
       data: {
         organizationId: ORGANIZATION_ID,
         customerId: CUSTOMER_A,
+        invoiceId: INVOICE_PARTIAL,
         paymentNumber: "PAY-26-00001",
         amount: 1000,
         unappliedAmount: 0,
-        currencyCode: "USD",
+        currencyCode: "INR",
+        baseCurrencyCode: "INR",
+        exchangeRate: 1,
+        amountInBaseCurrency: 1000,
         paidAt: now,
         method: "BANK_TRANSFER",
         status: "COMPLETED",
@@ -264,7 +329,27 @@ async function main() {
     update: {},
   });
 
-  console.log("Seed complete: organization, user, customers, products, taxes and four invoices.");
+  await prisma.numberSequence.upsert({
+    where: {
+      organizationId_documentType_period_scopeKey: {
+        organizationId: ORGANIZATION_ID,
+        documentType: "PAYMENT",
+        period: new Date().getUTCFullYear(),
+        scopeKey: "DEFAULT",
+      },
+    },
+    create: {
+      organizationId: ORGANIZATION_ID,
+      documentType: "PAYMENT",
+      period: new Date().getUTCFullYear(),
+      scopeKey: "DEFAULT",
+      prefix: "PAY",
+      nextNumber: 2,
+    },
+    update: {},
+  });
+
+  console.log("Seed complete: organization, user, customers, products, taxes, rates and four invoices.");
 }
 
 main()

@@ -12,6 +12,7 @@ import {
   createInvoice,
   deleteInvoice,
   duplicateInvoice,
+  listPayments,
   recordPayment,
   sendInvoice,
   updateInvoice,
@@ -27,6 +28,9 @@ function validationFailure(error: z.ZodError): Result<never> {
 
 function revalidateInvoicePaths(id?: string) {
   revalidatePath(ROUTES.invoices);
+  revalidatePath(ROUTES.invoiceNew);
+  revalidatePath(ROUTES.dashboard);
+  revalidatePath(ROUTES.reports);
   if (id) {
     revalidatePath(ROUTES.invoiceDetail(id));
     revalidatePath(ROUTES.invoiceEdit(id));
@@ -51,6 +55,23 @@ export async function updateInvoiceAction(
   const result = await updateInvoice(id, parsed.data, expectedVersion);
   if (result.ok) revalidateInvoicePaths(result.data.id);
   return result;
+}
+
+export async function saveDraftAction(
+  values: unknown,
+  id?: string,
+): Promise<Result<InvoiceDetail>> {
+  const parsed = invoiceFormSchema.safeParse(values);
+  if (!parsed.success) return validationFailure(parsed.error);
+  const result = id
+    ? await updateInvoice(id, parsed.data, parsed.data.version ?? 1)
+    : await createInvoice(parsed.data);
+  if (result.ok) revalidateInvoicePaths(result.data.id);
+  return result;
+}
+
+export async function listPaymentsAction() {
+  return listPayments();
 }
 
 export async function deleteInvoiceAction(id: string): Promise<Result<{ id: string }>> {

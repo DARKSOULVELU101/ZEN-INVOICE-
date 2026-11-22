@@ -2,6 +2,22 @@ import { z } from "zod";
 import { APP } from "@/config/app";
 import { INVOICE_STATUSES } from "../domain/status";
 
+export const SUPPORTED_CURRENCIES = ["INR", "USD", "EUR", "GBP", "AED"] as const;
+
+export const currencyCodeSchema = z.enum(SUPPORTED_CURRENCIES);
+
+const stateCodeSchema = z
+  .string()
+  .trim()
+  .length(2, "State code must be two characters")
+  .transform((value) => value.toUpperCase());
+
+const gstinSchema = z
+  .string()
+  .trim()
+  .regex(/^[0-9A-Z]{15}$/, "GSTIN must be 15 alphanumeric characters")
+  .transform((value) => value.toUpperCase());
+
 const isoDate = z
   .string()
   .regex(/^\d{4}-\d{2}-\d{2}$/, "Use the format YYYY-MM-DD")
@@ -17,7 +33,8 @@ export const decimalValue = z
 export const invoiceLineSchema = z
   .object({
     key: z.string().optional(),
-    productId: z.string().uuid().nullable().optional(),
+    productId: z.string().uuid("Select a product"),
+    hsnSac: z.string().trim().max(20).optional().nullable(),
     description: z.string().trim().min(1, "Description is required").max(500),
     quantity: decimalValue.refine((value) => Number(value) > 0, "Quantity must be greater than zero"),
     unitPrice: decimalValue,
@@ -28,12 +45,23 @@ export const invoiceLineSchema = z
     taxable: z.boolean().default(true),
     taxIds: z.array(z.string().uuid()).default([]),
   })
-  .strict();
+  .strict()
+  .refine((value) => new Set(value.taxIds).size === value.taxIds.length, {
+    message: "Duplicate taxes are not allowed",
+    path: ["taxIds"],
+  });
 
 export const invoiceFormSchema = z
   .object({
     customerId: z.string().uuid("Select a customer"),
-    currencyCode: z.string().trim().length(3).toUpperCase(),
+    currencyCode: currencyCodeSchema,
+    gstin: gstinSchema.optional().nullable(),
+    sourceStateCode: stateCodeSchema.optional().nullable(),
+    destinationStateCode: stateCodeSchema.optional().nullable(),
+    isReverseCharge: z.boolean().default(false),
+    shippingAmount: decimalValue.optional().default("0"),
+    roundOffAmount: decimalValue.optional().default("0"),
+    version: z.number().int().min(1).optional(),
     issueDate: isoDate,
     dueDate: isoDate,
     reference: z.string().trim().max(100).optional().nullable(),

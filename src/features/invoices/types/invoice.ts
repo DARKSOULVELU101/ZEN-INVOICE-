@@ -5,6 +5,7 @@ import type { DisplayInvoiceStatus } from "../domain/status";
 export interface InvoiceLineInput {
   key?: string;
   productId?: string | null;
+  hsnSac?: string | null;
   description: string;
   quantity: string | number;
   unitPrice: string | number;
@@ -16,6 +17,12 @@ export interface InvoiceLineInput {
 export interface InvoiceInput {
   customerId: string;
   currencyCode: string;
+  gstin?: string | null;
+  sourceStateCode?: string | null;
+  destinationStateCode?: string | null;
+  isReverseCharge?: boolean;
+  shippingAmount?: string | number;
+  roundOffAmount?: string | number;
   issueDate: Date;
   dueDate: Date;
   reference?: string | null;
@@ -37,15 +44,20 @@ export interface InvoiceLineDto {
   position: number;
   description: string;
   skuSnapshot: string | null;
+  hsnSac: string | null;
   productId: string | null;
   quantity: string;
   unitPrice: string;
   discountPercent: string;
   discountAmount: string;
   taxable: boolean;
+  taxableAmount: string;
+  cgstAmount: string;
+  sgstAmount: string;
+  igstAmount: string;
   taxAmount: string;
   amount: string;
-  taxes: { id: string; name: string; rate: string; amount: string }[];
+  taxes: { id: string; name: string; component: string | null; rate: string; amount: string }[];
 }
 
 export interface InvoiceListItem {
@@ -59,6 +71,13 @@ export interface InvoiceListItem {
   dueDate: string;
   currencyCode: string;
   subtotal: string;
+  discountAmount: string;
+  taxableAmount: string;
+  shippingAmount: string;
+  cgstAmount: string;
+  sgstAmount: string;
+  igstAmount: string;
+  roundOffAmount: string;
   taxAmount: string;
   total: string;
   amountPaid: string;
@@ -87,6 +106,10 @@ export interface PaymentDto {
 export interface InvoiceDetail extends InvoiceListItem {
   baseCurrencyCode: string;
   exchangeRate: string;
+  gstin: string | null;
+  sourceStateCode: string | null;
+  destinationStateCode: string | null;
+  isReverseCharge: boolean;
   reference: string | null;
   notes: string | null;
   terms: string | null;
@@ -100,6 +123,18 @@ export interface InvoiceDetail extends InvoiceListItem {
   events: InvoiceEventDto[];
   payments: PaymentDto[];
   revisionCount: number;
+}
+
+export interface PaymentListItem {
+  id: string;
+  paymentNumber: string;
+  customerName: string;
+  invoiceNumber: string | null;
+  amount: string;
+  currencyCode: string;
+  paidAt: string;
+  method: string;
+  status: string;
 }
 
 export interface InvoiceListResult {

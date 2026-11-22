@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import {
   AuditAction,
+  CurrencyCode,
   DocumentType,
   EntityType,
   InvoiceEventType,
@@ -23,8 +24,15 @@ import {
 } from "@/lib/errors/result";
 import { cursorCondition, nextCursor } from "@/lib/query/cursor";
 import { assertOwnership, dataScopeFor, requirePermission } from "@/lib/rbac/guard";
-import { clampNonNegative, Decimal, roundMoney, roundPercent, toDbDecimal } from "@/lib/money/decimal";
-import { calculateInvoiceTotals } from "../domain/totals";
+import {
+  clampNonNegative,
+  Decimal,
+  roundMoney,
+  roundPercent,
+  toDbDecimal,
+  type DecimalInput,
+} from "@/lib/money/decimal";
+import { calculateInvoiceTotals, taxComponentFor, type TaxRateInput } from "../domain/totals";
 import { displayStatus, isEditable, transition } from "../domain/status";
 import type { InvoiceFormOutput, InvoiceListQuery } from "../schemas/invoice";
 import type { RecordPaymentInput } from "../schemas/payment";
@@ -40,7 +48,7 @@ import type {
 type Db = Awaited<ReturnType<typeof getTenantDb>>;
 
 const invoiceInclude = {
-  customer: { select: { id: true, displayName: true, email: true } },
+  customer: { select: { id: true, displayName: true, email: true, stateCode: true, gstin: true } },
   items: { include: { taxes: true }, orderBy: { position: "asc" as const } },
   events: {
     include: { actor: { select: { name: true } } },
@@ -61,6 +69,13 @@ const invoiceListSelect = {
   dueDate: true,
   currencyCode: true,
   subtotal: true,
+  discountAmount: true,
+  taxableAmount: true,
+  shippingAmount: true,
+  cgstAmount: true,
+  sgstAmount: true,
+  igstAmount: true,
+  roundOffAmount: true,
   taxAmount: true,
   total: true,
   amountPaid: true,
@@ -92,6 +107,13 @@ function mapListItem(record: InvoiceListRecord): InvoiceListItem {
     dueDate: record.dueDate.toISOString().slice(0, 10),
     currencyCode: record.currencyCode,
     subtotal: numberString(record.subtotal),
+    discountAmount: numberString(record.discountAmount),
+    taxableAmount: numberString(record.taxableAmount),
+    shippingAmount: numberString(record.shippingAmount),
+    cgstAmount: numberString(record.cgstAmount),
+    sgstAmount: numberString(record.sgstAmount),
+    igstAmount: numberString(record.igstAmount),
+    roundOffAmount: numberString(record.roundOffAmount),
     taxAmount: numberString(record.taxAmount),
     total: numberString(record.total),
     amountPaid: numberString(record.amountPaid),
@@ -107,17 +129,23 @@ function mapLine(line: InvoiceRecord["items"][number]): InvoiceLineDto {
     position: line.position,
     description: line.description,
     skuSnapshot: line.skuSnapshot,
+    hsnSac: line.hsnSac,
     productId: line.productId,
     quantity: numberString(line.quantity),
     unitPrice: numberString(line.unitPrice),
     discountPercent: numberString(line.discountPercent),
     discountAmount: numberString(line.discountAmount),
     taxable: line.taxable,
+    taxableAmount: numberString(line.taxableAmount),
+    cgstAmount: numberString(line.cgstAmount),
+    sgstAmount: numberString(line.sgstAmount),
+    igstAmount: numberString(line.igstAmount),
     taxAmount: numberString(line.taxAmount),
     amount: numberString(line.amount),
     taxes: line.taxes.map((tax) => ({
       id: tax.taxId,
       name: tax.nameSnapshot,
+      component: tax.component,
       rate: numberString(tax.rateSnapshot),
       amount: numberString(tax.amount),
     })),
@@ -148,6 +176,10 @@ function mapDetail(record: InvoiceRecord): InvoiceDetail {
     ...mapListItem(record),
     baseCurrencyCode: record.baseCurrencyCode,
     exchangeRate: numberString(record.exchangeRate),
+    gstin: record.gstin,
+    sourceStateCode: record.sourceStateCode,
+    destinationStateCode: record.destinationStateCode,
+    isReverseCharge: record.isReverseCharge,
     reference: record.reference,
     notes: record.notes,
     terms: record.terms,
@@ -252,55 +284,130 @@ async function loadSettings(db: Db, organizationId: string) {
   };
 }
 
+async function loadOrganizationProfile(db: Db, organizationId: string) {
+  const organization = await db.organization.findUnique({
+    where: { id: organizationId },
+    select: { gstin: true, stateCode: true },
+  });
+  return { gstin: organization?.gstin ?? null, stateCode: organization?.stateCode ?? null };
+}
+
+async function resolveExchangeRate(
+  db: Db,
+  organizationId: string,
+  from: CurrencyCode,
+  to: CurrencyCode,
+  date: Date,
+): Promise<Decimal> {
+  if (from === to) return new Decimal(1);
+  const rate = await db.exchangeRate.findFirst({
+    where: {
+      organizationId,
+      fromCurrencyCode: from,
+      toCurrencyCode: to,
+      rateDate: { lte: date },
+    },
+    orderBy: { rateDate: "desc" },
+  });
+  if (!rate) {
+    throw new DomainError(
+      ErrorCodes.EXCHANGE_RATE_MISSING,
+      `No exchange rate is configured for ${from} to ${to} on or before ${date.toISOString().slice(0, 10)}.`,
+    );
+  }
+  return new Decimal(rate.rate.toString());
+}
+
 interface PreparedLines {
   itemData: Prisma.InvoiceItemUncheckedCreateWithoutInvoiceInput[];
   subtotal: Decimal;
+  netSubtotal: Decimal;
   discountAmount: Decimal;
+  taxableAmount: Decimal;
+  shippingAmount: Decimal;
+  cgstAmount: Decimal;
+  sgstAmount: Decimal;
+  igstAmount: Decimal;
+  roundOffAmount: Decimal;
   taxAmount: Decimal;
   total: Decimal;
+}
+
+interface PrepareLinesOptions {
+  shippingAmount?: DecimalInput;
+  roundOffAmount?: DecimalInput;
+  sourceStateCode?: string | null;
+  destinationStateCode?: string | null;
 }
 
 async function prepareLines(
   db: Db,
   organizationId: string,
   lines: readonly InvoiceLineInput[],
+  options: PrepareLinesOptions = {},
 ): Promise<PreparedLines> {
   const taxIds = [...new Set(lines.flatMap((line) => (line.taxIds ?? []).filter(() => line.taxable !== false)))];
   const productIds = [...new Set(lines.map((line) => line.productId).filter((id): id is string => Boolean(id)))];
 
+  if (productIds.length !== lines.length || lines.some((line) => !line.productId)) {
+    throw new DomainError(ErrorCodes.PRODUCT_INVALID, "Every line must reference a valid product.");
+  }
+
   const [taxes, products] = await Promise.all([
     taxIds.length ? db.tax.findMany({ where: { id: { in: taxIds } } }) : Promise.resolve([]),
-    productIds.length ? db.product.findMany({ where: { id: { in: productIds } } }) : Promise.resolve([]),
+    db.product.findMany({ where: { id: { in: productIds } } }),
   ]);
 
   if (taxes.length !== taxIds.length) {
     throw new DomainError(ErrorCodes.TAX_INVALID, "One or more selected taxes are no longer available.");
   }
+  if (products.length !== productIds.length) {
+    throw new DomainError(ErrorCodes.PRODUCT_INVALID, "One or more selected products are no longer available.");
+  }
 
   const taxById = new Map(taxes.map((tax) => [tax.id, tax]));
   const productById = new Map(products.map((product) => [product.id, product]));
-  const taxNameById = new Map(taxes.map((tax) => [tax.id, tax.name]));
+  const sourceStateCode = options.sourceStateCode ?? null;
+  const destinationStateCode = options.destinationStateCode ?? null;
+  const interstate = Boolean(
+    sourceStateCode && destinationStateCode && sourceStateCode.toUpperCase() !== destinationStateCode.toUpperCase(),
+  );
 
+  const taxRateFor = (id: string): TaxRateInput => {
+    const tax = taxById.get(id);
+    if (!tax) throw new DomainError(ErrorCodes.TAX_INVALID, "Unknown tax selected.");
+    return {
+      rate: tax.rate.toString(),
+      component: tax.component,
+      type: tax.type,
+      isCompound: tax.isCompound,
+      isInclusive: tax.isInclusive,
+    };
+  };
+
+  const shippingTaxRates = lines.find((line) => line.taxable !== false && (line.taxIds?.length ?? 0) > 0)?.taxIds?.map(taxRateFor) ?? [];
   const calculated = calculateInvoiceTotals(
     lines.map((line) => ({
       quantity: line.quantity,
       unitPrice: line.unitPrice,
       discountPercent: line.discountPercent ?? 0,
-      taxes:
-        line.taxable === false
-          ? []
-          : (line.taxIds ?? []).map((id) => {
-              const tax = taxById.get(id);
-              if (!tax) throw new DomainError(ErrorCodes.TAX_INVALID, "Unknown tax selected.");
-              return { rate: tax.rate.toString(), isCompound: tax.isCompound };
-            }),
+      taxes: line.taxable === false ? [] : (line.taxIds ?? []).map(taxRateFor),
     })),
+    {
+      shippingAmount: options.shippingAmount ?? 0,
+      shippingTaxable: false,
+      shippingTaxRates,
+      roundOffAmount: options.roundOffAmount ?? 0,
+      sourceStateCode,
+      destinationStateCode,
+    },
   );
 
   const itemData = lines.map((line, index): Prisma.InvoiceItemUncheckedCreateWithoutInvoiceInput => {
     const totals = calculated.lines[index];
     if (!totals) throw new Error("Totals calculation did not produce a line result.");
     const product = line.productId ? productById.get(line.productId) : undefined;
+    if (!product) throw new DomainError(ErrorCodes.PRODUCT_INVALID, "Select a valid product.");
     const lineTaxes = line.taxable === false
       ? []
       : [...(line.taxIds ?? [])].sort((left, right) => {
@@ -313,13 +420,18 @@ async function prepareLines(
       organizationId,
       position: index + 1,
       description: line.description,
-      skuSnapshot: product?.sku ?? null,
-      productId: line.productId ?? null,
+      skuSnapshot: product.sku,
+      hsnSac: line.hsnSac ?? product.hsnSac,
+      productId: product.id,
       quantity: toDbDecimal(line.quantity),
       unitPrice: toDbDecimal(line.unitPrice),
       discountPercent: roundPercent(line.discountPercent ?? 0),
       discountAmount: toDbDecimal(totals.discountAmount),
       taxable: line.taxable ?? true,
+      taxableAmount: toDbDecimal(totals.taxableAmount),
+      cgstAmount: toDbDecimal(totals.gst.cgstAmount),
+      sgstAmount: toDbDecimal(totals.gst.sgstAmount),
+      igstAmount: toDbDecimal(totals.gst.igstAmount),
       taxAmount: toDbDecimal(totals.taxAmount),
       amount: toDbDecimal(totals.amount),
       taxes: {
@@ -330,7 +442,8 @@ async function prepareLines(
           return {
             organizationId,
             taxId,
-            nameSnapshot: taxNameById.get(taxId) ?? tax.name,
+            nameSnapshot: tax.name,
+            component: taxComponentFor(taxRateFor(taxId), interstate),
             rateSnapshot: roundPercent(tax.rate),
             amount: toDbDecimal(taxAmount),
           };
@@ -342,7 +455,14 @@ async function prepareLines(
   return {
     itemData,
     subtotal: calculated.subtotal,
+    netSubtotal: calculated.netSubtotal,
     discountAmount: calculated.discountAmount,
+    taxableAmount: calculated.taxableAmount,
+    shippingAmount: calculated.shippingAmount,
+    cgstAmount: calculated.cgstAmount,
+    sgstAmount: calculated.sgstAmount,
+    igstAmount: calculated.igstAmount,
+    roundOffAmount: calculated.roundOffAmount,
     taxAmount: calculated.taxAmount,
     total: calculated.total,
   };
@@ -449,11 +569,25 @@ export async function createInvoice(input: InvoiceFormOutput): Promise<Result<In
     const customer = await db.customer.findFirst({ where: { id: input.customerId, deletedAt: null } });
     if (!customer) throw new DomainError(ErrorCodes.CUSTOMER_INVALID, "Select a valid customer.");
 
-    const prepared = await prepareLines(db, session.organizationId, input.lines);
     const settings = await loadSettings(db, session.organizationId);
+    const organizationProfile = await loadOrganizationProfile(db, session.organizationId);
+    const sourceStateCode = input.sourceStateCode ?? organizationProfile.stateCode;
+    const destinationStateCode = input.destinationStateCode ?? customer.stateCode ?? sourceStateCode;
+    const prepared = await prepareLines(db, session.organizationId, input.lines, {
+      shippingAmount: input.shippingAmount,
+      roundOffAmount: input.roundOffAmount,
+      sourceStateCode,
+      destinationStateCode,
+    });
     const invoiceNumber = await allocateNumber(db, DocumentType.INVOICE, settings.prefix, session.organizationId);
-    const baseCurrencyCode = customer.currencyCode ?? settings.currency;
-    const exchangeRate = baseCurrencyCode === input.currencyCode ? 1 : 1;
+    const baseCurrencyCode = settings.currency;
+    const exchangeRate = await resolveExchangeRate(
+      db,
+      session.organizationId,
+      baseCurrencyCode,
+      input.currencyCode,
+      input.issueDate,
+    );
 
     const created = await db.$transaction(async (tx) => {
       const invoice = await tx.invoice.create({
@@ -465,6 +599,10 @@ export async function createInvoice(input: InvoiceFormOutput): Promise<Result<In
           currencyCode: input.currencyCode,
           baseCurrencyCode,
           exchangeRate,
+          gstin: input.gstin ?? customer.gstin ?? organizationProfile.gstin,
+          sourceStateCode,
+          destinationStateCode,
+          isReverseCharge: input.isReverseCharge ?? false,
           issueDate: input.issueDate,
           dueDate: input.dueDate,
           reference: input.reference ?? null,
@@ -473,6 +611,12 @@ export async function createInvoice(input: InvoiceFormOutput): Promise<Result<In
           footer: input.footer ?? null,
           subtotal: toDbDecimal(prepared.subtotal),
           discountAmount: toDbDecimal(prepared.discountAmount),
+          taxableAmount: toDbDecimal(prepared.taxableAmount),
+          shippingAmount: toDbDecimal(prepared.shippingAmount),
+          cgstAmount: toDbDecimal(prepared.cgstAmount),
+          sgstAmount: toDbDecimal(prepared.sgstAmount),
+          igstAmount: toDbDecimal(prepared.igstAmount),
+          roundOffAmount: toDbDecimal(prepared.roundOffAmount),
           taxAmount: toDbDecimal(prepared.taxAmount),
           total: toDbDecimal(prepared.total),
           balanceDue: toDbDecimal(prepared.total),
@@ -533,7 +677,23 @@ export async function updateInvoice(
 
     const customer = await db.customer.findFirst({ where: { id: input.customerId, deletedAt: null } });
     if (!customer) throw new DomainError(ErrorCodes.CUSTOMER_INVALID, "Select a valid customer.");
-    const prepared = await prepareLines(db, session.organizationId, input.lines);
+    const settings = await loadSettings(db, session.organizationId);
+    const organizationProfile = await loadOrganizationProfile(db, session.organizationId);
+    const sourceStateCode = input.sourceStateCode ?? organizationProfile.stateCode;
+    const destinationStateCode = input.destinationStateCode ?? customer.stateCode ?? sourceStateCode;
+    const prepared = await prepareLines(db, session.organizationId, input.lines, {
+      shippingAmount: input.shippingAmount,
+      roundOffAmount: input.roundOffAmount,
+      sourceStateCode,
+      destinationStateCode,
+    });
+    const exchangeRate = await resolveExchangeRate(
+      db,
+      session.organizationId,
+      settings.currency,
+      input.currencyCode,
+      input.issueDate,
+    );
 
     const updated = await db.$transaction(async (tx) => {
       const snapshot = {
@@ -572,6 +732,12 @@ export async function updateInvoice(
         data: {
           customerId: input.customerId,
           currencyCode: input.currencyCode,
+          baseCurrencyCode: settings.currency,
+          exchangeRate,
+          gstin: input.gstin ?? customer.gstin ?? organizationProfile.gstin,
+          sourceStateCode,
+          destinationStateCode,
+          isReverseCharge: input.isReverseCharge ?? false,
           issueDate: input.issueDate,
           dueDate: input.dueDate,
           reference: input.reference ?? null,
@@ -580,6 +746,12 @@ export async function updateInvoice(
           footer: input.footer ?? null,
           subtotal: toDbDecimal(prepared.subtotal),
           discountAmount: toDbDecimal(prepared.discountAmount),
+          taxableAmount: toDbDecimal(prepared.taxableAmount),
+          shippingAmount: toDbDecimal(prepared.shippingAmount),
+          cgstAmount: toDbDecimal(prepared.cgstAmount),
+          sgstAmount: toDbDecimal(prepared.sgstAmount),
+          igstAmount: toDbDecimal(prepared.igstAmount),
+          roundOffAmount: toDbDecimal(prepared.roundOffAmount),
           taxAmount: toDbDecimal(prepared.taxAmount),
           total: toDbDecimal(prepared.total),
           balanceDue: clampNonNegative(toDbDecimal(prepared.total).minus(existing.amountPaid)),
@@ -771,8 +943,18 @@ export async function duplicateInvoice(id: string): Promise<Result<InvoiceDetail
         notes: existing.notes,
         terms: existing.terms,
         footer: existing.footer,
+        gstin: existing.gstin,
+        sourceStateCode: existing.sourceStateCode,
+        destinationStateCode: existing.destinationStateCode,
+        isReverseCharge: existing.isReverseCharge,
         subtotal: existing.subtotal,
         discountAmount: existing.discountAmount,
+        taxableAmount: existing.taxableAmount,
+        shippingAmount: existing.shippingAmount,
+        cgstAmount: existing.cgstAmount,
+        sgstAmount: existing.sgstAmount,
+        igstAmount: existing.igstAmount,
+        roundOffAmount: existing.roundOffAmount,
         taxAmount: existing.taxAmount,
         total: existing.total,
         balanceDue: existing.total,
@@ -789,6 +971,10 @@ export async function duplicateInvoice(id: string): Promise<Result<InvoiceDetail
             discountPercent: item.discountPercent,
             discountAmount: item.discountAmount,
             taxable: item.taxable,
+            taxableAmount: item.taxableAmount,
+            cgstAmount: item.cgstAmount,
+            sgstAmount: item.sgstAmount,
+            igstAmount: item.igstAmount,
             taxAmount: item.taxAmount,
             amount: item.amount,
             taxes: {
@@ -796,6 +982,7 @@ export async function duplicateInvoice(id: string): Promise<Result<InvoiceDetail
                 organizationId: session.organizationId,
                 taxId: tax.taxId,
                 nameSnapshot: tax.nameSnapshot,
+                component: tax.component,
                 rateSnapshot: tax.rateSnapshot,
                 amount: tax.amount,
               })),
@@ -812,6 +999,41 @@ export async function duplicateInvoice(id: string): Promise<Result<InvoiceDetail
   });
 }
 
+export async function listPayments(): Promise<Result<import("../types/invoice").PaymentListItem[]>> {
+  return toResultAsync(async () => {
+    const session = await requireSession();
+    requirePermission(session, "payment:record");
+    const db = await getTenantDb();
+    const payments = await db.payment.findMany({
+      where: { deletedAt: null },
+      select: {
+        id: true,
+        paymentNumber: true,
+        amount: true,
+        currencyCode: true,
+        paidAt: true,
+        method: true,
+        status: true,
+        customer: { select: { displayName: true } },
+        invoice: { select: { invoiceNumber: true } },
+      },
+      orderBy: { paidAt: "desc" },
+      take: 500,
+    });
+    return payments.map((payment) => ({
+      id: payment.id,
+      paymentNumber: payment.paymentNumber,
+      customerName: payment.customer.displayName,
+      invoiceNumber: payment.invoice?.invoiceNumber ?? null,
+      amount: numberString(payment.amount),
+      currencyCode: payment.currencyCode,
+      paidAt: payment.paidAt.toISOString().slice(0, 10),
+      method: payment.method,
+      status: payment.status,
+    }));
+  });
+}
+
 export async function recordPayment(input: RecordPaymentInput): Promise<Result<{ paymentId: string; balanceDue: string }>> {
   return toResultAsync(async () => {
     const session = await requireSession();
@@ -822,10 +1044,6 @@ export async function recordPayment(input: RecordPaymentInput): Promise<Result<{
     transition(existing.status, "RECORD_PAYMENT");
 
     const amount = toDbDecimal(input.amount);
-    if (amount.gt(existing.balanceDue)) {
-      throw new DomainError(ErrorCodes.AMOUNT_EXCEEDS_BALANCE, "Payment cannot exceed the invoice balance.");
-    }
-
     const paymentNumber = await allocateNumber(
       db,
       DocumentType.PAYMENT,
@@ -834,47 +1052,87 @@ export async function recordPayment(input: RecordPaymentInput): Promise<Result<{
     );
 
     const result = await db.$transaction(async (tx) => {
-      const locked = await tx.$queryRaw<{ id: string }[]>`
-        SELECT id FROM "Invoice"
+      const locked = await tx.$queryRaw<{
+        id: string;
+        customerId: string;
+        currencyCode: string;
+        baseCurrencyCode: string;
+        exchangeRate: string;
+        total: string;
+        status: DbInvoiceStatus;
+      }[]>`
+        SELECT
+          id,
+          "customerId"::text AS "customerId",
+          "currencyCode"::text AS "currencyCode",
+          "baseCurrencyCode"::text AS "baseCurrencyCode",
+          "exchangeRate"::text AS "exchangeRate",
+          total::text AS total,
+          status
+        FROM "Invoice"
         WHERE id = ${existing.id}::uuid AND "organizationId" = ${session.organizationId}::uuid
         FOR UPDATE
       `;
-      if (locked.length === 0) throw new NotFoundError("Invoice");
+      const row = locked[0];
+      if (!row) throw new NotFoundError("Invoice");
+
+      const applied = await tx.paymentApplication.aggregate({
+        where: { organizationId: session.organizationId, invoiceId: row.id },
+        _sum: { amount: true },
+      });
+      const amountPaid = roundMoney(applied._sum.amount ?? 0);
+      const balanceDue = roundMoney(new Decimal(row.total).minus(amountPaid));
+
+      if (amount.gt(balanceDue)) {
+        throw new DomainError(ErrorCodes.AMOUNT_EXCEEDS_BALANCE, "Payment cannot exceed the invoice balance.");
+      }
+
+      const exchangeRate = new Decimal(row.exchangeRate);
+      const finalAmountPaid = roundMoney(amountPaid.plus(amount));
+      const finalBalanceDue = roundMoney(new Decimal(row.total).minus(finalAmountPaid));
+      const nextStatus = finalBalanceDue.lte(0)
+        ? transition(row.status, "PAY")
+        : transition(row.status, "RECORD_PAYMENT");
 
       const payment = await tx.payment.create({
         data: {
           organizationId: session.organizationId,
-          customerId: existing.customerId,
+          customerId: row.customerId,
+          invoiceId: row.id,
           paymentNumber,
           amount,
           unappliedAmount: new Decimal(0),
-          currencyCode: existing.currencyCode,
+          currencyCode: row.currencyCode as CurrencyCode,
+          baseCurrencyCode: row.baseCurrencyCode as CurrencyCode,
+          exchangeRate,
+          amountInBaseCurrency: roundMoney(amount.times(exchangeRate)),
           paidAt: input.paidAt,
           method: input.method ?? PaymentMethod.OTHER,
           reference: input.reference ?? null,
           status: PaymentStatus.COMPLETED,
           createdById: session.user.id,
           applications: {
-            create: { organizationId: session.organizationId, invoiceId: existing.id, amount },
+            create: { organizationId: session.organizationId, invoiceId: row.id, amount },
           },
         },
       });
 
-      const amountPaid = roundMoney(existing.amountPaid.plus(amount));
-      const balanceDue = roundMoney(existing.total.minus(amountPaid));
-      const nextStatus: DbInvoiceStatus = balanceDue.lte(0) ? "PAID" : "PARTIALLY_PAID";
-
       await tx.invoice.update({
-        where: { id: existing.id },
-        data: { amountPaid, balanceDue, status: nextStatus, version: { increment: 1 } },
+        where: { id: row.id },
+        data: {
+          amountPaid: finalAmountPaid,
+          balanceDue: finalBalanceDue,
+          status: nextStatus,
+          version: { increment: 1 },
+        },
       });
       await tx.invoiceEvent.create({
         data: {
           organizationId: session.organizationId,
-          invoiceId: existing.id,
+          invoiceId: row.id,
           actorId: session.user.id,
           type: InvoiceEventType.PAYMENT_RECEIVED,
-          message: `Payment of ${amount.toString()} ${existing.currencyCode} recorded.`,
+          message: `Payment of ${amount.toString()} ${row.currencyCode} recorded.`,
         },
       });
       await tx.auditLog.create({
@@ -884,12 +1142,12 @@ export async function recordPayment(input: RecordPaymentInput): Promise<Result<{
           action: AuditAction.PAYMENT_RECORD,
           entityType: EntityType.PAYMENT,
           entityId: payment.id,
-          after: { invoiceId: existing.id, amount: amount.toString() } as Prisma.InputJsonValue,
+          after: { invoiceId: row.id, amount: amount.toString() } as Prisma.InputJsonValue,
           correlationId: randomUUID(),
         },
       });
 
-      return { paymentId: payment.id, balanceDue: balanceDue.toString() };
+      return { paymentId: payment.id, balanceDue: finalBalanceDue.toString() };
     });
 
     return result;
