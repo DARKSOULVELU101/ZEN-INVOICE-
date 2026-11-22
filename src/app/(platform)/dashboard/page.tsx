@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { ROUTES } from "@/config/app";
 import { getReport } from "@/features/reports/server/report-service";
+import { Decimal, roundMoney } from "@/lib/money/decimal";
 
 export const metadata = { title: "Dashboard" };
 export const dynamic = "force-dynamic";
@@ -29,10 +30,11 @@ export default async function DashboardPage() {
     { label: "Issued revenue", value: metric(sales.data.summary.billed, sales.data.currency) },
     { label: "Collected", value: metric(sales.data.summary.paid, sales.data.currency) },
     { label: "Outstanding", value: metric(outstanding.data.summary.outstanding, outstanding.data.currency) },
-    { label: "GST collected", value: metric(
-      String(Number(gstResult.data.summary.cgst) + Number(gstResult.data.summary.sgst) + Number(gstResult.data.summary.igst)),
-      gstResult.data.currency,
-    ) },
+    { label: "GST collected", value: metric(roundMoney(
+      new Decimal(gstResult.data.summary.cgst)
+        .plus(gstResult.data.summary.sgst)
+        .plus(gstResult.data.summary.igst),
+    ).toString(), gstResult.data.currency) },
   ];
 
   return (

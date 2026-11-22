@@ -75,7 +75,7 @@ export function InvoiceActions({ invoice }: { invoice: InvoiceDetail }) {
   const canEdit = ["DRAFT", "SENT", "VIEWED", "PARTIALLY_PAID"].includes(invoice.status);
   const canDelete = invoice.status === "DRAFT";
   const canPay = ["SENT", "VIEWED", "PARTIALLY_PAID"].includes(invoice.status);
-  const canCancel = ["SENT", "VIEWED", "PARTIALLY_PAID"].includes(invoice.status);
+  const canCancel = ["SENT", "VIEWED"].includes(invoice.status);
 
   const close = () => {
     setDialog(null);

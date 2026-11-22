@@ -483,7 +483,14 @@ async function resolveExchangeRate(
       `No exchange rate is configured for ${from} to ${to} on or before ${toCalendarDateInput(date)}.`,
     );
   }
-  return new Decimal(rate.rate.toString());
+  const resolved = new Decimal(rate.rate.toString());
+  if (!resolved.gt(0)) {
+    throw new DomainError(
+      ErrorCodes.EXCHANGE_RATE_MISSING,
+      `The configured exchange rate for ${from} to ${to} on ${toCalendarDateInput(rate.rateDate)} is invalid.`,
+    );
+  }
+  return resolved;
 }
 
 interface PreparedLines {
@@ -773,6 +780,7 @@ export async function createInvoice(input: InvoiceFormOutput): Promise<Result<In
           gstin: input.gstin ?? customer.gstin ?? organizationProfile.gstin,
           sourceStateCode,
           destinationStateCode,
+          placeOfSupplyCode: destinationStateCode,
           isReverseCharge: input.isReverseCharge ?? false,
           invoiceDate: dates.invoiceDate,
           issueDate: dates.issueDate,
@@ -852,6 +860,14 @@ export async function updateInvoice(
     const customer = await db.customer.findFirst({ where: { id: input.customerId, deletedAt: null } });
     if (!customer) throw new DomainError(ErrorCodes.CUSTOMER_INVALID, "Select a valid customer.");
     const settings = await loadSettings(db, session.organizationId);
+    if (existing.status !== "DRAFT") {
+      if (input.currencyCode !== existing.currencyCode || settings.currency !== existing.baseCurrencyCode) {
+        throw new DomainError(
+          ErrorCodes.INVARIANT,
+          "Currency cannot be changed after an invoice has been issued.",
+        );
+      }
+    }
     const organizationProfile = await loadOrganizationProfile(db, session.organizationId);
     const sourceStateCode = input.sourceStateCode ?? organizationProfile.stateCode;
     const destinationStateCode = input.destinationStateCode ?? customer.stateCode ?? sourceStateCode;
@@ -862,15 +878,23 @@ export async function updateInvoice(
       destinationStateCode,
     });
     const dates = deriveInvoiceDates(input.invoiceDate, input.paymentTerms);
-    const exchangeRate = await resolveExchangeRate(
-      db,
-      session.organizationId,
-      settings.currency,
-      input.currencyCode,
-      dates.invoiceDate,
-    );
+    const exchangeRate = existing.status === "DRAFT"
+      ? await resolveExchangeRate(
+          db,
+          session.organizationId,
+          settings.currency,
+          input.currencyCode,
+          dates.invoiceDate,
+        )
+      : new Decimal(existing.exchangeRate.toString());
 
     const updated = await db.$transaction(async (tx) => {
+      const claimed = await tx.invoice.updateMany({
+        where: { id: existing.id, version: expectedVersion, deletedAt: null },
+        data: { version: { increment: 1 } },
+      });
+      if (claimed.count !== 1) throw new ConflictError();
+
       const snapshot = {
         invoiceNumber: existing.invoiceNumber,
         status: existing.status,
@@ -914,6 +938,7 @@ export async function updateInvoice(
           gstin: input.gstin ?? customer.gstin ?? organizationProfile.gstin,
           sourceStateCode,
           destinationStateCode,
+          placeOfSupplyCode: destinationStateCode,
           status: preservedStatus,
           searchText: buildInvoiceSearchText({
             invoiceNumber: existing.invoiceNumber,
@@ -943,7 +968,7 @@ export async function updateInvoice(
           taxAmount: toDbDecimal(prepared.taxAmount),
           total: toDbDecimal(prepared.total),
           balanceDue: clampNonNegative(toDbDecimal(prepared.total).minus(existing.amountPaid)),
-          version: { increment: 1 },
+          version: expectedVersion + 1,
           items: { create: prepared.itemData },
         },
       });
@@ -1008,17 +1033,22 @@ export async function deleteInvoice(id: string): Promise<Result<{ id: string }>>
 }
 
 export interface InvoicePdfResult {
-  bytes: Buffer;
   filename: string;
   key: string;
   version: number;
   url: string;
 }
 
+interface StoredInvoicePdf {
+  result: InvoicePdfResult;
+  bytes: Buffer;
+  record: InvoiceRecord;
+}
+
 async function ensureStoredInvoicePdf(
   id: string,
   auditAction: AuditAction,
-): Promise<{ result: InvoicePdfResult; record: InvoiceRecord }> {
+): Promise<StoredInvoicePdf> {
   const session = await requireSession();
   requirePermission(session, "invoice:view");
   const db = await getTenantDb();
@@ -1045,16 +1075,16 @@ async function ensureStoredInvoicePdf(
       hash,
     });
 
-    await storeInvoicePdf(nextKey, bytes);
+    const storedKey = await storeInvoicePdf(nextKey, bytes);
     generatedAt = new Date();
-    key = nextKey;
+    key = storedKey;
 
     await db.$transaction(async (tx) => {
       await tx.invoice.update({
         where: { id },
         data: {
-          pdfKey: nextKey,
-          pdfUrl: buildInvoicePdfUri(nextKey),
+          pdfKey: storedKey,
+          pdfUrl: buildInvoicePdfUri(storedKey),
           pdfHash: hash,
           pdfVersion: version,
           pdfGeneratedAt: generatedAt,
@@ -1064,7 +1094,7 @@ async function ensureStoredInvoicePdf(
         data: {
           organizationId: session.organizationId,
           invoiceId: id,
-          storageKey: nextKey,
+          storageKey: storedKey,
           version,
           fileSizeBytes: bytes.byteLength,
           sha256: hash,
@@ -1087,7 +1117,7 @@ async function ensureStoredInvoicePdf(
           action: auditAction,
           entityType: EntityType.INVOICE,
           entityId: id,
-          after: { pdfVersion: version, storageKey: nextKey } as Prisma.InputJsonValue,
+          after: { pdfVersion: version, storageKey: storedKey } as Prisma.InputJsonValue,
           correlationId: randomUUID(),
         },
       });
@@ -1098,7 +1128,8 @@ async function ensureStoredInvoicePdf(
 
   const url = await getInvoicePdfUrl({ key, filename, disposition: "attachment", expiresIn: 300 });
   return {
-    result: { bytes, filename, key, version, url },
+    result: { filename, key, version, url },
+    bytes,
     record: await findInvoice(db, id),
   };
 }
@@ -1131,6 +1162,17 @@ export async function downloadInvoicePdf(id: string): Promise<Result<InvoicePdfR
           message: `PDF version ${result.version} downloaded`,
         },
       });
+      await tx.auditLog.create({
+        data: {
+          organizationId: session.organizationId,
+          actorId: session.user.id,
+          action: AuditAction.EXPORT,
+          entityType: EntityType.INVOICE,
+          entityId: id,
+          after: { pdfVersion: result.version } as Prisma.InputJsonValue,
+          correlationId: randomUUID(),
+        },
+      });
     });
     return result;
   });
@@ -1154,8 +1196,27 @@ export async function printInvoicePdf(id: string): Promise<Result<InvoicePdfResu
           message: `PDF version ${result.version} printed`,
         },
       });
+      await tx.auditLog.create({
+        data: {
+          organizationId: session.organizationId,
+          actorId: session.user.id,
+          action: AuditAction.PRINT,
+          entityType: EntityType.INVOICE,
+          entityId: id,
+          after: { pdfVersion: result.version } as Prisma.InputJsonValue,
+          correlationId: randomUUID(),
+        },
+      });
     });
-    return result;
+    return {
+      ...result,
+      url: await getInvoicePdfUrl({
+        key: result.key,
+        filename: result.filename,
+        disposition: "inline",
+        expiresIn: 120,
+      }),
+    };
   });
 }
 
@@ -1222,23 +1283,77 @@ export async function sendInvoice(
       );
     }
 
-    const duplicate = await db.emailOutbox.findFirst({
+    const email = buildInvoiceEmail({
+      invoiceNumber: existing.invoiceNumber,
+      customerName: existing.customer.displayName,
+      customerCompany: existing.customer.legalName ?? existing.customer.displayName,
+      companyName: existing.organization.legalName ?? existing.organization.name,
+      amount: formatMoney(existing.total, existing.currencyCode),
+      dueDate: toCalendarDateInput(existing.dueDate),
+      subject: composer.subject,
+      message: composer.message,
+    });
+
+    const sentCount = await db.emailOutbox.count({
       where: {
+        organizationId: session.organizationId,
         invoiceId: id,
         purpose: "INVOICE_SEND",
-        status: { in: [OutboxStatus.PENDING, OutboxStatus.PROCESSING, OutboxStatus.SENT] },
-        createdAt: { gte: new Date(Date.now() - 30_000) },
+        status: OutboxStatus.SENT,
       },
-      select: { id: true },
     });
-    if (duplicate) {
-      throw new ConflictError("This invoice was sent moments ago. Wait a moment before sending it again.");
-    }
+    const idempotencyKey = createHash("sha256")
+      .update([
+        id,
+        action,
+        existing.version,
+        sentCount,
+        toAddress,
+        ccAddresses.join(","),
+        bccAddresses.join(","),
+        email.subject,
+        email.text,
+      ].join("\u001f"))
+      .digest("hex");
 
-    const recordFailure = async (message: string, provider?: string) => {
+    const recordFailure = async (message: string, providerName?: string) => {
       const lastError = message.slice(0, 500);
       try {
         await db.$transaction(async (tx) => {
+          const prior = await tx.emailOutbox.findFirst({
+            where: { organizationId: session.organizationId, idempotencyKey },
+            select: { id: true },
+          });
+          const outboxData = {
+            organizationId: session.organizationId,
+            entityType: EntityType.INVOICE,
+            entityId: id,
+            invoiceId: id,
+            toAddress,
+            ccAddresses,
+            bccAddresses,
+            subject: email.subject,
+            bodyText: email.text,
+            bodyHtml: email.html,
+            templateKey: "invoice-delivery-v1",
+            attachmentName: `${existing.invoiceNumber}.pdf`,
+            attachmentMimeType: "application/pdf",
+            provider: providerName ?? null,
+            lastError,
+            status: OutboxStatus.FAILED,
+            purpose: "INVOICE_SEND",
+            nextAttemptAt: new Date(),
+          };
+          if (prior) {
+            await tx.emailOutbox.update({
+              where: { id: prior.id },
+              data: { ...outboxData, attempts: { increment: 1 } },
+            });
+          } else {
+            await tx.emailOutbox.create({
+              data: { ...outboxData, idempotencyKey, attempts: 1, scheduledAt: new Date() },
+            });
+          }
           await tx.invoice.update({
             where: { id },
             data: {
@@ -1254,21 +1369,6 @@ export async function sendInvoice(
               type: InvoiceEventType.EMAIL_FAILED,
               message: "Invoice email delivery failed",
               metadata: { reason: lastError },
-            },
-          });
-          await tx.emailOutbox.create({
-            data: {
-              organizationId: session.organizationId,
-              entityType: EntityType.INVOICE,
-              entityId: id,
-              invoiceId: id,
-              toAddress,
-              subject: composer.subject?.trim() || `Invoice ${existing.invoiceNumber}`,
-              status: OutboxStatus.FAILED,
-              attempts: 1,
-              provider,
-              lastError,
-              purpose: "INVOICE_SEND",
             },
           });
         });
@@ -1292,7 +1392,10 @@ export async function sendInvoice(
 
     let pdf: Buffer;
     try {
-      pdf = await generateInvoicePdf(buildInvoicePdfData(existing));
+      pdf = await generateInvoicePdf({
+        ...buildInvoicePdfData(existing),
+        status: nextStatus,
+      });
     } catch {
       await recordFailure("Invoice PDF generation failed.", provider.name);
       throw new DomainError(
@@ -1301,19 +1404,57 @@ export async function sendInvoice(
       );
     }
 
-    const email = buildInvoiceEmail({
-      invoiceNumber: existing.invoiceNumber,
-      customerName: existing.customer.displayName,
-      customerCompany: existing.customer.legalName ?? existing.customer.displayName,
-      companyName: existing.organization.legalName ?? existing.organization.name,
-      amount: formatMoney(existing.total, existing.currencyCode),
-      dueDate: toCalendarDateInput(existing.dueDate),
-      subject: composer.subject,
-      message: composer.message,
+    const prior = await db.emailOutbox.findFirst({
+      where: { organizationId: session.organizationId, idempotencyKey },
     });
+    if (prior?.status === OutboxStatus.SENT && prior.providerMessageId && prior.sentAt) {
+      return {
+        status: existing.status,
+        emailDelivered: true,
+        providerMessageId: prior.providerMessageId,
+        sentAt: prior.sentAt.toISOString(),
+      };
+    }
 
     const senderAddress = config.provider === "EMAIL_API" ? "email-api" : config.from;
     const replyToAddress = config.provider === "EMAIL_API" ? undefined : config.replyTo;
+    const queuedAt = new Date();
+    const outboxData = {
+      toAddress,
+      fromAddress: senderAddress,
+      replyTo: replyToAddress ?? null,
+      ccAddresses,
+      bccAddresses,
+      subject: email.subject,
+      bodyText: email.text,
+      bodyHtml: email.html,
+      templateKey: "invoice-delivery-v1",
+      attachmentName: `${existing.invoiceNumber}.pdf`,
+      attachmentMimeType: "application/pdf",
+      attachmentData: Uint8Array.from(pdf),
+      status: OutboxStatus.PROCESSING,
+      nextAttemptAt: queuedAt,
+      lastError: null,
+    };
+    const outbox = prior
+      ? await db.emailOutbox.update({
+          where: { id: prior.id },
+          data: { ...outboxData, attempts: { increment: 1 } },
+        })
+      : await db.emailOutbox.create({
+          data: {
+            organizationId: session.organizationId,
+            entityType: EntityType.INVOICE,
+            entityId: id,
+            invoiceId: id,
+            purpose: "INVOICE_SEND",
+            idempotencyKey,
+            scheduledAt: queuedAt,
+            attempts: 1,
+            ...outboxData,
+          },
+        });
+
     const message = {
       from: senderAddress,
       to: [toAddress],
@@ -1329,7 +1470,7 @@ export async function sendInvoice(
         content: pdf,
       }],
       headers: { invoiceId: id },
-      idempotencyKey: randomUUID(),
+      idempotencyKey,
     };
 
     let providerMessageId: string;
@@ -1346,6 +1487,18 @@ export async function sendInvoice(
 
     const sentAt = new Date();
     await db.$transaction(async (tx) => {
+      await tx.emailOutbox.update({
+        where: { id: outbox.id },
+        data: {
+          provider: provider.name,
+          providerMessageId,
+          status: OutboxStatus.SENT,
+          scheduledAt: sentAt,
+          nextAttemptAt: sentAt,
+          sentAt,
+          lastError: null,
+        },
+      });
       await tx.invoice.update({
         where: { id },
         data: {
@@ -1369,34 +1522,6 @@ export async function sendInvoice(
           actorId: session.user.id,
           type: InvoiceEventType.SENT,
           message: action === "RESEND" ? "Invoice resent by email" : "Invoice sent by email",
-        },
-      });
-      await tx.emailOutbox.create({
-        data: {
-          organizationId: session.organizationId,
-          entityType: EntityType.INVOICE,
-          entityId: id,
-          invoiceId: id,
-          toAddress,
-          fromAddress: senderAddress,
-          replyTo: replyToAddress ?? null,
-          ccAddresses,
-          bccAddresses,
-          subject: email.subject,
-          bodyText: email.text,
-          bodyHtml: email.html,
-          templateKey: "invoice-delivery-v1",
-          attachmentName: `${existing.invoiceNumber}.pdf`,
-          attachmentMimeType: "application/pdf",
-          attachmentData: Uint8Array.from(pdf),
-          provider: provider.name,
-          providerMessageId,
-          status: OutboxStatus.SENT,
-          attempts: 1,
-          scheduledAt: sentAt,
-          nextAttemptAt: sentAt,
-          sentAt,
-          purpose: "INVOICE_SEND",
         },
       });
       await tx.auditLog.create({
@@ -1473,6 +1598,12 @@ export async function cancelInvoice(id: string, reason: string): Promise<Result<
     const existing = await findInvoice(db, id);
     await assertAccess(session, existing);
     const nextStatus = transition(existing.status, "CANCEL");
+    if (!new Decimal(existing.balanceDue.toString()).eq(existing.total.toString())) {
+      throw new DomainError(
+        ErrorCodes.INVARIANT,
+        "An invoice with recorded payments cannot be cancelled.",
+      );
+    }
 
     await db.$transaction(async (tx) => {
       await tx.invoice.update({
@@ -1554,6 +1685,7 @@ export async function duplicateInvoice(id: string): Promise<Result<InvoiceDetail
         gstin: existing.gstin,
         sourceStateCode: existing.sourceStateCode,
         destinationStateCode: existing.destinationStateCode,
+        placeOfSupplyCode: existing.placeOfSupplyCode ?? existing.destinationStateCode ?? existing.sourceStateCode,
         isReverseCharge: existing.isReverseCharge,
         subtotal: existing.subtotal,
         discountAmount: existing.discountAmount,
@@ -1685,7 +1817,11 @@ export async function recordPayment(input: RecordPaymentInput): Promise<Result<{
       if (!row) throw new NotFoundError("Invoice");
 
       const applied = await tx.paymentApplication.aggregate({
-        where: { organizationId: session.organizationId, invoiceId: row.id },
+        where: {
+          organizationId: session.organizationId,
+          invoiceId: row.id,
+          payment: { status: PaymentStatus.COMPLETED, deletedAt: null },
+        },
         _sum: { amount: true },
       });
       const amountPaid = roundMoney(applied._sum.amount ?? 0);

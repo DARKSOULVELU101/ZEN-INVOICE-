@@ -13,9 +13,10 @@ describe("invoice delivery primitives", () => {
 
   it("requires explicit provider configuration", () => {
     expect(() => loadEmailConfig({})).toThrow(/EMAIL_PROVIDER/);
-    expect(() => loadEmailConfig({ EMAIL_PROVIDER: "RESEND" })).toThrow(/EMAIL_FROM/);
-    expect(() => loadEmailConfig({ EMAIL_PROVIDER: "RESEND", EMAIL_FROM: "billing@example.com" }))
-      .toThrow(/RESEND_API_KEY/);
+    expect(() => loadEmailConfig({ EMAIL_PROVIDER: "RESEND" })).toThrow(/EMAIL_PROVIDER/);
+    expect(() => loadEmailConfig({ EMAIL_PROVIDER: "SES" })).toThrow(/EMAIL_FROM/);
+    expect(() => loadEmailConfig({ EMAIL_PROVIDER: "SES", EMAIL_FROM: "billing@example.com" }))
+      .toThrow(/AWS_REGION/);
     expect(() => loadEmailConfig({ EMAIL_PROVIDER: "EMAIL_API" })).toThrow(/EMAIL_API_URL/);
     expect(() => loadEmailConfig({ EMAIL_PROVIDER: "EMAIL_API", EMAIL_API_URL: "not-a-url" }))
       .toThrow(/valid URL/);

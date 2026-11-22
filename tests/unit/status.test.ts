@@ -27,6 +27,7 @@ describe("invoice status machine", () => {
     expect(transition("VIEWED", "PAY")).toBe("PAID");
     expect(transition("PARTIALLY_PAID", "PAY")).toBe("PAID");
     expect(canTransition("DRAFT", "PAY")).toBe(false);
+    expect(canTransition("PARTIALLY_PAID", "CANCEL")).toBe(false);
   });
 
   it("rejects invalid transitions with a domain error", () => {

@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { FileText } from "lucide-react";
+import { signOutAction } from "@/features/auth/actions";
 import { getSession } from "@/lib/auth/session";
 import { PlatformNav, OrganizationBadge } from "@/components/shared/platform-nav";
 import { APP } from "@/config/app";
@@ -49,6 +50,11 @@ export default async function PlatformLayout({ children }: { children: React.Rea
             <Link href="/invoices" className="rounded-control border bg-card px-3 py-1.5 text-xs font-medium shadow-sm transition-colors hover:bg-subtle">
               {session.user.name}
             </Link>
+            <form action={signOutAction}>
+              <button type="submit" className="rounded-control border bg-card px-3 py-1.5 text-xs font-medium shadow-sm transition-colors hover:bg-subtle">
+                Sign out
+              </button>
+            </form>
           </div>
         </header>
 

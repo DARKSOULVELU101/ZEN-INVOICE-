@@ -1,7 +1,9 @@
 import { cache } from "react";
-import { DEMO } from "@/config/demo";
-import { permissionsForRoles, type PermissionKey } from "@/config/permissions";
+import { cookies } from "next/headers";
+import { PERMISSION_KEYS, permissionsForRoles, type PermissionKey } from "@/config/permissions";
+import { prisma } from "@/lib/db/client";
 import { UnauthenticatedError } from "@/lib/errors/result";
+import { SESSION_COOKIE, verifySessionToken } from "@/features/auth/server/session-token";
 
 export interface SessionUser {
   id: string;
@@ -18,17 +20,70 @@ export interface Session {
 }
 
 export const getSession = cache(async (): Promise<Session | null> => {
-  if ((process.env.AUTH_MODE ?? "demo") !== "demo") {
-    return null;
+  if (process.env.AUTH_MODE !== "production") return null;
+
+  const cookieStore = await cookies();
+  const payload = verifySessionToken(cookieStore.get(SESSION_COOKIE)?.value);
+  if (!payload) return null;
+
+  const user = await prisma.user.findFirst({
+    where: { id: payload.userId, status: "ACTIVE", deletedAt: null },
+    select: { id: true, name: true, email: true, passwordHash: true },
+  });
+  if (!user?.passwordHash) return null;
+
+  const membership = await prisma.organizationMembership.findFirst({
+    where: {
+      id: payload.membershipId,
+      userId: user.id,
+      status: "ACTIVE",
+      deletedAt: null,
+      organization: { status: "ACTIVE", deletedAt: null },
+    },
+    select: {
+      id: true,
+      organizationId: true,
+      organization: { select: { name: true } },
+      roles: {
+        where: { role: { deletedAt: null } },
+        select: { role: { select: { id: true, key: true } } },
+      },
+    },
+  });
+  if (!membership) return null;
+
+  const roleIds = membership.roles.map((entry) => entry.role.id);
+  const roles = membership.roles.map((entry) => entry.role.key);
+  const [rolePermissions, overrides] = await Promise.all([
+    roleIds.length
+      ? prisma.rolePermission.findMany({
+          where: { roleId: { in: roleIds } },
+          select: { permission: { select: { key: true } } },
+        })
+      : Promise.resolve([]),
+    prisma.userPermissionOverride.findMany({
+      where: { organizationId: membership.organizationId, userId: user.id },
+      select: { effect: true, permission: { select: { key: true } } },
+    }),
+  ]);
+
+  const keys = new Set<PermissionKey>([
+    ...permissionsForRoles(roles),
+    ...rolePermissions.map((entry) => entry.permission.key as PermissionKey),
+  ]);
+  for (const override of overrides) {
+    const key = override.permission.key as PermissionKey;
+    if (!PERMISSION_KEYS.includes(key)) continue;
+    if (override.effect === "GRANT") keys.add(key);
+    if (override.effect === "DENY") keys.delete(key);
   }
 
-  const roles = ["ADMIN"];
   return {
-    user: { id: DEMO.userId, name: DEMO.userName, email: DEMO.userEmail },
-    organizationId: DEMO.organizationId,
-    organizationName: DEMO.organizationName,
+    user: { id: user.id, name: user.name, email: user.email },
+    organizationId: membership.organizationId,
+    organizationName: membership.organization.name,
     roles,
-    permissions: permissionsForRoles(roles),
+    permissions: [...keys],
   };
 });
 

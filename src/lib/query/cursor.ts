@@ -1,5 +1,5 @@
 export type CursorDirection = "asc" | "desc";
-export type CursorValueKind = "date" | "number" | "string";
+export type CursorValueKind = "date" | "number" | "decimal" | "string";
 
 export interface Cursor {
   sort: string;
@@ -21,7 +21,7 @@ export function decodeCursor(value: string | undefined): Cursor | null {
       typeof parsed === "object" && parsed !== null &&
       "sort" in parsed && typeof parsed.sort === "string" && parsed.sort.length > 0 &&
       "dir" in parsed && (parsed.dir === "asc" || parsed.dir === "desc") &&
-      "kind" in parsed && ["date", "number", "string"].includes(String(parsed.kind)) &&
+      "kind" in parsed && ["date", "number", "decimal", "string"].includes(String(parsed.kind)) &&
       "value" in parsed && typeof parsed.value === "string" &&
       "id" in parsed && typeof parsed.id === "string"
     ) {
@@ -42,6 +42,9 @@ export function decodeCursor(value: string | undefined): Cursor | null {
 function decodeValue(cursor: Cursor): string | number | Date {
   if (cursor.kind === "number") return Number(cursor.value);
   if (cursor.kind === "date") return new Date(cursor.value);
+  if (cursor.kind === "decimal") {
+    return /^-?\d+(\.\d+)?$/.test(cursor.value) ? cursor.value : Number.NaN;
+  }
   return cursor.value;
 }
 
@@ -60,6 +63,10 @@ export function cursorCondition(cursor: Cursor | null) {
   };
 }
 
+function isDecimalString(value: string): boolean {
+  return /^-?\d+(\.\d+)?$/.test(value);
+}
+
 function serializeValue(value: unknown): Pick<Cursor, "kind" | "value"> | null {
   if (value instanceof Date) {
     return { kind: "date", value: value.toISOString() };
@@ -72,8 +79,8 @@ function serializeValue(value: unknown): Pick<Cursor, "kind" | "value"> | null {
   }
   if (typeof value === "object" && value !== null && "toString" in value) {
     const serialized = String(value.toString());
-    if (serialized.trim().length > 0 && !Number.isNaN(Number(serialized))) {
-      return { kind: "number", value: serialized };
+    if (isDecimalString(serialized)) {
+      return { kind: "decimal", value: serialized };
     }
   }
   return null;

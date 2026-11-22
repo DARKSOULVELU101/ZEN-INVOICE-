@@ -1,17 +1,24 @@
 import base64
 import binascii
+import hashlib
+import hmac
+import json
 import os
-import smtplib
-import ssl
 from email.message import EmailMessage
 from typing import Any
+from urllib.parse import urlparse
 
+import boto3
 import httpx
-from fastapi import FastAPI, Header, HTTPException
+from botocore.config import Config
+from botocore.exceptions import BotoCoreError, ClientError
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import padding
+from fastapi import FastAPI, Header, HTTPException, Request
 from pydantic import BaseModel, EmailStr, Field
 from starlette.concurrency import run_in_threadpool
 
-app = FastAPI(title="Zenbook Email API", version="1.0.0")
+app = FastAPI(title="Zenbook Email API", version="2.0.0")
 
 
 class Attachment(BaseModel):
@@ -36,23 +43,8 @@ def env(name: str) -> str:
     return (os.getenv(name) or "").strip()
 
 
-def parse_bool(value: str, fallback: bool) -> bool:
-    if not value:
-        return fallback
-    return value.strip().lower() in {"1", "true", "yes", "on"}
-
-
 def configured_providers() -> dict[str, bool]:
-    return {
-        "resend": bool(env("RESEND_API_KEY") and env("EMAIL_FROM")),
-        "smtp": bool(
-            env("SMTP_HOST")
-            and env("SMTP_PORT")
-            and env("SMTP_USER")
-            and env("SMTP_PASSWORD")
-            and env("EMAIL_FROM")
-        ),
-    }
+    return {"ses": bool(env("EMAIL_FROM") and env("AWS_REGION"))}
 
 
 def sanitize_error(error: BaseException) -> str:
@@ -72,14 +64,24 @@ def decode_attachments(attachments: list[Attachment]) -> list[tuple[str, str, by
     return decoded
 
 
-def build_smtp_message(request: SendEmailRequest, sender: str, attachments: list[tuple[str, str, bytes]]) -> EmailMessage:
+def require_invoice_pdf(attachments: list[tuple[str, str, bytes]]) -> None:
+    pdfs = [
+        attachment for attachment in attachments
+        if attachment[1].lower().split(";", 1)[0].strip() == "application/pdf"
+        and attachment[2].startswith(b"%PDF-")
+    ]
+    if not pdfs:
+        raise HTTPException(status_code=400, detail="A valid PDF invoice attachment is required.")
+
+
+def build_message(request: SendEmailRequest, sender: str, attachments: list[tuple[str, str, bytes]]) -> EmailMessage:
     message = EmailMessage()
     message["From"] = sender
     message["To"] = ", ".join(request.to)
     if request.cc:
         message["Cc"] = ", ".join(request.cc)
     message["Subject"] = request.subject
-    message["Message-ID"] = f"<{request.idempotencyKey}@zenbook.invoice>"
+    message["Message-ID"] = f"<{hashlib.sha256(request.idempotencyKey.encode()).hexdigest()}@zenbook.invoice>"
     message.set_content(request.text)
     message.add_alternative(request.html, subtype="html")
 
@@ -95,74 +97,115 @@ def build_smtp_message(request: SendEmailRequest, sender: str, attachments: list
     return message
 
 
-def send_smtp(request: SendEmailRequest, sender: str, attachments: list[tuple[str, str, bytes]]) -> str:
-    host = env("SMTP_HOST")
-    port = int(env("SMTP_PORT"))
-    user = env("SMTP_USER")
-    password = env("SMTP_PASSWORD")
-    secure = parse_bool(env("SMTP_SECURE"), port == 465)
-    timeout = int(env("SMTP_TIMEOUT") or "20")
-    recipients = [*request.to, *request.cc, *request.bcc]
-    message = build_smtp_message(request, sender, attachments)
-
-    if secure:
-        with smtplib.SMTP_SSL(host, port, context=ssl.create_default_context(), timeout=timeout) as client:
-            client.login(user, password)
-            client.send_message(message, to_addrs=recipients)
-    else:
-        with smtplib.SMTP(host, port, timeout=timeout) as client:
-            client.starttls(context=ssl.create_default_context())
-            client.login(user, password)
-            client.send_message(message, to_addrs=recipients)
-
-    return f"smtp:{request.idempotencyKey}"
+def ses_client(service: str = "ses"):
+    return boto3.client(
+        service,
+        region_name=env("AWS_REGION") or None,
+        config=Config(retries={"max_attempts": 3, "mode": "standard"}),
+    )
 
 
-async def send_resend(request: SendEmailRequest, sender: str, attachments: list[tuple[str, str, bytes]]) -> str:
-    payload: dict[str, Any] = {
-        "from": sender,
-        "to": request.to,
-        "subject": request.subject,
-        "text": request.text,
-        "html": request.html,
+def send_ses(request: SendEmailRequest, sender: str, attachments: list[tuple[str, str, bytes]]) -> str:
+    arguments: dict[str, Any] = {
+        "RawMessage": {"Data": build_message(request, sender, attachments).as_bytes()}
     }
-    if request.cc:
-        payload["cc"] = request.cc
-    if request.bcc:
-        payload["bcc"] = request.bcc
-    if attachments:
-        payload["attachments"] = [
-            {
-                "filename": filename,
-                "content": base64.b64encode(content).decode("ascii"),
-            }
-            for filename, _, content in attachments
-        ]
-
-    headers = {
-        "Authorization": f"Bearer {env('RESEND_API_KEY')}",
-        "Idempotency-Key": request.idempotencyKey,
-    }
-    async with httpx.AsyncClient(timeout=20) as client:
-        response = await client.post("https://api.resend.com/emails", json=payload, headers=headers)
-    if response.status_code >= 400:
-        raise RuntimeError(f"Resend returned {response.status_code}: {sanitize_error(Exception(response.text[:200]))}")
-    data = response.json()
-    return str(data.get("id") or f"resend:{request.idempotencyKey}")
+    configuration_set = env("SES_CONFIGURATION_SET")
+    if configuration_set:
+        arguments["ConfigurationSetName"] = configuration_set
+    response = ses_client().send_raw_email(**arguments)
+    message_id = str(response.get("MessageId") or "")
+    if not message_id:
+        raise RuntimeError("AWS SES did not return a message identifier.")
+    return message_id
 
 
 def require_token(token: str | None) -> None:
     expected = env("EMAIL_API_TOKEN")
     if not expected:
         raise HTTPException(status_code=503, detail="EMAIL_API_TOKEN is not configured.")
-    if token != expected:
+    if token is None or not hmac.compare_digest(token, expected):
         raise HTTPException(status_code=401, detail="Invalid email API token.")
+
+
+def validate_certificate_url(value: str) -> None:
+    parsed = urlparse(value)
+    if parsed.scheme != "https":
+        raise HTTPException(status_code=400, detail="Invalid SNS signing certificate URL.")
+    hostname = parsed.hostname or ""
+    allowed_suffix = ".amazonaws.com"
+    if not (hostname.startswith("sns.") and hostname.endswith(allowed_suffix)):
+        raise HTTPException(status_code=400, detail="Invalid SNS signing certificate host.")
+    if not parsed.path.endswith(".pem") or ".." in parsed.path:
+        raise HTTPException(status_code=400, detail="Invalid SNS signing certificate path.")
+
+
+def validate_callback_url(value: str) -> None:
+    parsed = urlparse(value)
+    if parsed.scheme != "https" or not parsed.netloc:
+        raise RuntimeError("EMAIL_EVENT_CALLBACK_URL must be a valid HTTPS URL.")
+
+
+async def verify_sns_message(payload: dict[str, Any]) -> dict[str, Any]:
+    required = ["Type", "MessageId", "TopicArn", "Message", "Timestamp", "Signature", "SignatureVersion", "SigningCertURL"]
+    if any(not payload.get(key) for key in required):
+        raise HTTPException(status_code=400, detail="Malformed SNS notification.")
+    if payload["SignatureVersion"] != "1":
+        raise HTTPException(status_code=400, detail="Unsupported SNS signature version.")
+
+    certificate_url = str(payload["SigningCertURL"])
+    validate_certificate_url(certificate_url)
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            certificate_response = await client.get(certificate_url)
+        certificate_response.raise_for_status()
+        certificate = serialization.load_pem_x509_certificate(certificate_response.content)
+    except Exception as error:
+        raise HTTPException(status_code=400, detail="Could not load SNS signing certificate.") from error
+
+    fields = ["Message", "MessageId"]
+    if payload.get("Subject"):
+        fields.append("Subject")
+    if payload["Type"] == "SubscriptionConfirmation":
+        fields.extend(["SubscribeURL", "Token"])
+    fields.extend(["Timestamp", "TopicArn", "Type"])
+    signed_content = "".join(f"{key}\n{payload[key]}\n" for key in fields).encode("utf-8")
+    signature = base64.b64decode(str(payload["Signature"]))
+
+    try:
+        certificate.public_key().verify(
+            signature,
+            signed_content,
+            padding.PKCS1v15(),
+            hashes.SHA1(),
+        )
+    except Exception as error:
+        raise HTTPException(status_code=400, detail="Invalid SNS signature.") from error
+
+    return payload
+
+
+async def forward_email_event(event: dict[str, Any]) -> None:
+    callback_url = env("EMAIL_EVENT_CALLBACK_URL")
+    callback_token = env("EMAIL_EVENT_WEBHOOK_TOKEN")
+    if not callback_url or not callback_token:
+        raise RuntimeError("Email event callback is not configured.")
+    validate_callback_url(callback_url)
+
+    async with httpx.AsyncClient(timeout=15) as client:
+        response = await client.post(
+            callback_url,
+            json=event,
+            headers={"X-Email-Event-Token": callback_token},
+        )
+    if response.status_code >= 400:
+        raise RuntimeError(f"Email event callback returned {response.status_code}.")
 
 
 @app.get("/health")
 async def health() -> dict[str, Any]:
     providers = configured_providers()
-    return {"ok": True, "providers": providers, "configured": any(providers.values())}
+    configured = all(providers.values()) and bool(env("EMAIL_API_TOKEN"))
+    return {"ok": configured, "providers": providers, "configured": configured}
 
 
 @app.post("/v1/send-invoice")
@@ -171,27 +214,80 @@ async def send_invoice_email(
     x_email_api_token: str | None = Header(default=None, alias="X-Email-Api-Token"),
 ) -> dict[str, str]:
     require_token(x_email_api_token)
-
-    providers = configured_providers()
-    if not any(providers.values()):
-        raise HTTPException(status_code=503, detail="No email provider is configured on the email API.")
+    if not configured_providers()["ses"]:
+        raise HTTPException(status_code=503, detail="AWS SES is not configured on the email API.")
 
     sender = env("EMAIL_FROM")
     attachments = decode_attachments(request.attachments)
-    failures: list[str] = []
+    require_invoice_pdf(attachments)
 
-    if providers["resend"]:
+    try:
+        message_id = await run_in_threadpool(send_ses, request, sender, attachments)
+        return {"provider": "SES", "providerMessageId": message_id}
+    except (BotoCoreError, ClientError, Exception) as error:
+        raise HTTPException(status_code=502, detail=f"Email delivery failed. SES: {sanitize_error(error)}") from error
+
+
+@app.post("/webhooks/ses")
+async def ses_webhook(request: Request) -> dict[str, str]:
+    try:
+        payload = await request.json()
+    except Exception as error:
+        raise HTTPException(status_code=400, detail="Invalid JSON payload.") from error
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Invalid SNS payload.")
+
+    verified = await verify_sns_message(payload)
+    if verified["Type"] == "SubscriptionConfirmation":
         try:
-            message_id = await send_resend(request, sender, attachments)
-            return {"provider": "RESEND", "providerMessageId": message_id}
-        except Exception as error:
-            failures.append(f"RESEND: {sanitize_error(error)}")
+            await run_in_threadpool(
+                lambda: ses_client("sns").confirm_subscription(
+                    TopicArn=verified["TopicArn"],
+                    Token=verified["Token"],
+                )
+            )
+        except (BotoCoreError, ClientError) as error:
+            raise HTTPException(status_code=502, detail=f"Subscription confirmation failed: {sanitize_error(error)}") from error
+        return {"status": "confirmed"}
 
-    if providers["smtp"]:
-        try:
-            message_id = await run_in_threadpool(send_smtp, request, sender, attachments)
-            return {"provider": "SMTP", "providerMessageId": message_id}
-        except Exception as error:
-            failures.append(f"SMTP: {sanitize_error(error)}")
+    if verified["Type"] != "Notification":
+        return {"status": "ignored"}
 
-    raise HTTPException(status_code=502, detail="Email delivery failed. " + " | ".join(failures))
+    try:
+        message = json.loads(str(verified["Message"]))
+    except Exception as error:
+        raise HTTPException(status_code=400, detail="Invalid SNS message body.") from error
+
+    event_type = str(message.get("eventType") or "")
+    if event_type not in {"Delivery", "Bounce", "Complaint"}:
+        return {"status": "ignored"}
+
+    mail = message.get("mail") if isinstance(message.get("mail"), dict) else {}
+    message_id = str(mail.get("messageId") or "")
+    if not message_id:
+        return {"status": "ignored"}
+
+    recipients: list[str] = []
+    if event_type == "Delivery":
+        recipients = [str(item) for item in message.get("delivery", {}).get("recipients", [])]
+    else:
+        for recipient in message.get("bounce", {}).get("bouncedRecipients", []) + message.get("complaint", {}).get("complainedRecipients", []):
+            if isinstance(recipient, dict) and recipient.get("emailAddress"):
+                recipients.append(str(recipient["emailAddress"]))
+
+    event = {
+        "provider": "SES",
+        "eventId": str(verified.get("MessageId") or ""),
+        "eventType": event_type,
+        "messageId": message_id,
+        "recipients": recipients,
+        "timestamp": str(message.get("mail", {}).get("timestamp") or verified.get("Timestamp") or ""),
+        "reason": str(message.get("bounce", {}).get("bounceType") or message.get("complaint", {}).get("complaintType") or ""),
+    }
+
+    try:
+        await forward_email_event(event)
+    except (httpx.HTTPError, RuntimeError) as error:
+        raise HTTPException(status_code=502, detail=f"Email event forwarding failed: {sanitize_error(error)}") from error
+
+    return {"status": "accepted"}

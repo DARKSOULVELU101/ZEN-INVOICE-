@@ -98,6 +98,7 @@ enum ReportStatus {
 
 enum DocumentType {
   INVOICE
+  CUSTOMER
   ESTIMATE
   SALES_ORDER
   PURCHASE_ORDER
@@ -882,7 +883,9 @@ model EmailOutbox {
   sentAt             DateTime?
   createdAt          DateTime     @default(now())
   purpose            String       @default("INVOICE_SEND")
+  idempotencyKey     String       @db.VarChar(64)
 
+  @@unique([organizationId, idempotencyKey], name: "EmailOutbox_org_idempotency_key")
   @@index([organizationId, status, nextAttemptAt])
   @@index([invoiceId, purpose, createdAt])
   @@index([status, scheduledAt])

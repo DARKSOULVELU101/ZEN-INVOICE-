@@ -18,9 +18,21 @@ export async function GET(
   const result = await printInvoicePdf(id);
 
   if (!result.ok) {
+    const status = result.error.code === "NOT_FOUND"
+      ? 404
+      : result.error.code === "UNAUTHENTICATED"
+        ? 401
+        : result.error.code === "FORBIDDEN"
+          ? 403
+          : 400;
+    const message = result.error.code === "NOT_FOUND"
+      ? "Invoice not found."
+      : result.error.code === "UNAUTHENTICATED" || result.error.code === "FORBIDDEN"
+        ? "You do not have permission to print this invoice."
+        : "This invoice could not be prepared for printing.";
     return new Response(
-      `<!doctype html><html><body style="font-family:system-ui;padding:24px"><h1>Unable to print invoice</h1><p>${escapeHtml(result.error.message)}</p></body></html>`,
-      { status: result.error.code === "NOT_FOUND" ? 404 : 400, headers: { "Content-Type": "text/html; charset=utf-8" } },
+      `<!doctype html><html><body style="font-family:system-ui;padding:24px"><h1>Unable to print invoice</h1><p>${escapeHtml(message)}</p></body></html>`,
+      { status, headers: { "Content-Type": "text/html; charset=utf-8" } },
     );
   }
 

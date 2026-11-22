@@ -318,31 +318,57 @@ async function main() {
     });
   }
 
-  const existingPayment = await prisma.payment.findFirst({
-    where: { organizationId: ORGANIZATION_ID, paymentNumber: "PAY-26-00001" },
-  });
-  if (!existingPayment) {
-    await prisma.payment.create({
-      data: {
-        organizationId: ORGANIZATION_ID,
-        customerId: CUSTOMER_A,
-        invoiceId: INVOICE_PARTIAL,
-        paymentNumber: "PAY-26-00001",
-        amount: 1000,
-        unappliedAmount: 0,
-        currencyCode: "INR",
-        baseCurrencyCode: "INR",
-        exchangeRate: 1,
-        amountInBaseCurrency: 1000,
-        paidAt: now,
-        method: "BANK_TRANSFER",
-        status: "COMPLETED",
-        createdById: USER_ID,
-        applications: {
-          create: { organizationId: ORGANIZATION_ID, invoiceId: INVOICE_PARTIAL, amount: 1000 },
-        },
-      },
+  const paymentSeeds = [
+    { paymentNumber: "PAY-26-00001", invoiceId: INVOICE_PARTIAL, customerId: CUSTOMER_A },
+    { paymentNumber: "PAY-26-00002", invoiceId: INVOICE_PAID, customerId: CUSTOMER_B },
+  ];
+  for (const paymentSeed of paymentSeeds) {
+    const invoice = await prisma.invoice.findUnique({
+      where: { id: paymentSeed.invoiceId },
+      select: { amountPaid: true, issueDate: true },
     });
+    if (!invoice || invoice.amountPaid.lte(0)) continue;
+
+    let payment = await prisma.payment.findFirst({
+      where: { organizationId: ORGANIZATION_ID, paymentNumber: paymentSeed.paymentNumber },
+      select: { id: true },
+    });
+    if (!payment) {
+      payment = await prisma.payment.create({
+        data: {
+          organizationId: ORGANIZATION_ID,
+          customerId: paymentSeed.customerId,
+          invoiceId: paymentSeed.invoiceId,
+          paymentNumber: paymentSeed.paymentNumber,
+          amount: invoice.amountPaid,
+          unappliedAmount: 0,
+          currencyCode: "INR",
+          baseCurrencyCode: "INR",
+          exchangeRate: 1,
+          amountInBaseCurrency: invoice.amountPaid,
+          paidAt: invoice.issueDate,
+          method: "BANK_TRANSFER",
+          status: "COMPLETED",
+          createdById: USER_ID,
+        },
+        select: { id: true },
+      });
+    }
+
+    const application = await prisma.paymentApplication.findUnique({
+      where: { paymentId_invoiceId: { paymentId: payment.id, invoiceId: paymentSeed.invoiceId } },
+      select: { id: true },
+    });
+    if (!application) {
+      await prisma.paymentApplication.create({
+        data: {
+          organizationId: ORGANIZATION_ID,
+          paymentId: payment.id,
+          invoiceId: paymentSeed.invoiceId,
+          amount: invoice.amountPaid,
+        },
+      });
+    }
   }
 
   await prisma.numberSequence.upsert({
