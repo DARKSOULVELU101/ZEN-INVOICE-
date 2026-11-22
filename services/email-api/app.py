@@ -283,6 +283,10 @@ async def ses_webhook(request: Request) -> dict[str, str]:
         "recipients": recipients,
         "timestamp": str(message.get("mail", {}).get("timestamp") or verified.get("Timestamp") or ""),
         "reason": str(message.get("bounce", {}).get("bounceType") or message.get("complaint", {}).get("complaintType") or ""),
+        "sns": {
+            key: str(verified.get(key) or "")
+            for key in ["Type", "MessageId", "TopicArn", "Message", "Timestamp", "Signature", "SignatureVersion", "SigningCertURL"]
+        },
     }
 
     try:

@@ -1,15 +1,25 @@
 "use server";
 
+import { randomUUID } from "node:crypto";
 import { AuditAction, EntityType } from "@prisma/client";
 import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { prisma } from "@/lib/db/client";
 import { getSession } from "@/lib/auth/session";
 import { verifyPassword } from "@/features/auth/server/password";
-import { createSessionToken, SESSION_COOKIE, SESSION_TTL_SECONDS } from "@/features/auth/server/session-token";
+import { createSession, SESSION_COOKIE, SESSION_TTL_SECONDS } from "@/features/auth/server/session-token";
+import { revokeSession } from "@/features/auth/server/session-revocation";
+import {
+  evaluateLoginRateLimit,
+  loginRateLimitConfig,
+  loginRateLimitKey,
+  nextLoginRateLimitState,
+  resolveClientIp,
+} from "@/features/auth/server/rate-limit";
 
 export interface SignInState {
   error?: string;
+  retryAfterSeconds?: number;
 }
 
 const INVALID_CREDENTIALS = "Invalid email or password.";
@@ -17,9 +27,30 @@ const INVALID_CREDENTIALS = "Invalid email or password.";
 export async function signInAction(_state: SignInState, formData: FormData): Promise<SignInState> {
   const email = String(formData.get("email") ?? "").trim().toLowerCase();
   const password = String(formData.get("password") ?? "");
+  const requestHeaders = await headers();
+  const config = loginRateLimitConfig();
+  const clientIp = resolveClientIp(requestHeaders, config.trustProxy);
+  const rateKey = loginRateLimitKey(email, clientIp);
+  const userAgent = requestHeaders.get("user-agent") ?? null;
 
   if (!email || !password) {
     return { error: INVALID_CREDENTIALS };
+  }
+
+  const now = Date.now();
+  const rateRecord = await prisma.authRateLimit.findUnique({ where: { key: rateKey } });
+  const windowExpired = Boolean(rateRecord && now - rateRecord.firstFailureAt.getTime() > config.windowMs);
+  const currentState = {
+    failures: windowExpired ? 0 : rateRecord?.failures ?? 0,
+    lockedUntil: windowExpired ? null : rateRecord?.lockedUntil?.getTime() ?? null,
+  };
+  const rateOptions = { ...currentState, now, ...config };
+  const rateEvaluation = evaluateLoginRateLimit(rateOptions);
+  if (!rateEvaluation.allowed) {
+    return {
+      error: `Too many failed sign-in attempts. Try again in ${rateEvaluation.retryAfterSeconds} seconds.`,
+      retryAfterSeconds: rateEvaluation.retryAfterSeconds,
+    };
   }
 
   const user = await prisma.user.findUnique({
@@ -38,17 +69,74 @@ export async function signInAction(_state: SignInState, formData: FormData): Pro
       },
     },
   });
-  if (!user?.passwordHash || user.status !== "ACTIVE" || user.deletedAt) {
+
+  const recordFailure = async (organizationId?: string) => {
+    const nextState = nextLoginRateLimitState(rateOptions);
+    await prisma.authRateLimit.upsert({
+      where: { key: rateKey },
+      create: {
+        key: rateKey,
+        failures: nextState.failures,
+        firstFailureAt: new Date(now),
+        lockedUntil: nextState.lockedUntil ? new Date(nextState.lockedUntil) : null,
+      },
+      update: {
+        failures: nextState.failures,
+        ...(windowExpired || !rateRecord ? { firstFailureAt: new Date(now) } : {}),
+        lockedUntil: nextState.lockedUntil ? new Date(nextState.lockedUntil) : null,
+      },
+    });
+    if (organizationId) {
+      await prisma.auditLog.create({
+        data: {
+          organizationId,
+          actorId: user?.id ?? null,
+          action: nextState.lockedUntil ? AuditAction.LOCKOUT : AuditAction.LOGIN_FAILED,
+          entityType: EntityType.USER,
+          entityId: user?.id ?? rateKey,
+          ipAddress: clientIp === "unknown" ? null : clientIp,
+          userAgent,
+          correlationId: randomUUID(),
+        },
+      });
+    }
+    if (nextState.lockedUntil) {
+      return {
+        error: `Too many failed sign-in attempts. Try again in ${rateEvaluation.retryAfterSeconds + config.lockMs / 1000} seconds.`,
+        retryAfterSeconds: Math.ceil(config.lockMs / 1000),
+      };
+    }
     return { error: INVALID_CREDENTIALS };
+  };
+
+  const membership = user?.memberships[0];
+  if (!user?.passwordHash || user.status !== "ACTIVE" || user.deletedAt) {
+    return recordFailure(membership?.organizationId);
   }
 
   const valid = await verifyPassword(password, user.passwordHash);
-  if (!valid) return { error: INVALID_CREDENTIALS };
+  if (!valid) return recordFailure(membership?.organizationId);
 
-  const membership = user.memberships[0];
-  if (!membership) return { error: "This account has no active organization." };
+  if (!membership) {
+    return { error: "This account has no active organization." };
+  }
 
-  const token = createSessionToken({ userId: user.id, membershipId: membership.id });
+  const sessionId = randomUUID();
+  const { token, payload } = await createSession({
+    userId: user.id,
+    membershipId: membership.id,
+    sessionId,
+  });
+  await prisma.userSession.create({
+    data: {
+      id: sessionId,
+      userId: user.id,
+      membershipId: membership.id,
+      expiresAt: new Date(payload.expiresAt),
+    },
+  });
+  await prisma.authRateLimit.deleteMany({ where: { key: rateKey } });
+
   const cookieStore = await cookies();
   cookieStore.set(SESSION_COOKIE, token, {
     httpOnly: true,
@@ -58,7 +146,6 @@ export async function signInAction(_state: SignInState, formData: FormData): Pro
     maxAge: SESSION_TTL_SECONDS,
   });
 
-  const requestHeaders = await headers();
   await prisma.auditLog.create({
     data: {
       organizationId: membership.organizationId,
@@ -66,9 +153,9 @@ export async function signInAction(_state: SignInState, formData: FormData): Pro
       action: AuditAction.LOGIN,
       entityType: EntityType.USER,
       entityId: user.id,
-      ipAddress: requestHeaders.get("x-forwarded-for")?.split(",")[0]?.trim() ?? null,
-      userAgent: requestHeaders.get("user-agent") ?? null,
-      correlationId: user.id,
+      ipAddress: clientIp === "unknown" ? null : clientIp,
+      userAgent,
+      correlationId: randomUUID(),
     },
   });
 
@@ -78,6 +165,7 @@ export async function signInAction(_state: SignInState, formData: FormData): Pro
 export async function signOutAction(): Promise<void> {
   const session = await getSession();
   if (session) {
+    await revokeSession(session.sessionId);
     await prisma.auditLog.create({
       data: {
         organizationId: session.organizationId,
@@ -85,6 +173,7 @@ export async function signOutAction(): Promise<void> {
         action: AuditAction.LOGOUT,
         entityType: EntityType.USER,
         entityId: session.user.id,
+        correlationId: randomUUID(),
       },
     });
   }

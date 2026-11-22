@@ -15,6 +15,7 @@ import {
 import { APP } from "@/config/app";
 import { formatMoney } from "@/lib/format/format";
 import { isValidEmailAddress, normalizeEmailAddress } from "@/features/email/domain/address";
+import { buildFailedInvoiceOutboxData } from "@/features/email/domain/outbox";
 import { loadEmailConfig } from "@/features/email/server/config";
 import { createEmailProvider } from "@/features/email/server/providers";
 import { requireSession, type Session } from "@/lib/auth/session";
@@ -37,6 +38,7 @@ import {
   toDbDecimal,
   type DecimalInput,
 } from "@/lib/money/decimal";
+import { convertDocumentAmountToBase } from "@/lib/money/currency";
 import {
   deriveInvoiceDates,
   parseCalendarDate,
@@ -754,8 +756,8 @@ export async function createInvoice(input: InvoiceFormOutput): Promise<Result<In
     const exchangeRate = await resolveExchangeRate(
       db,
       session.organizationId,
-      baseCurrencyCode,
       input.currencyCode,
+      baseCurrencyCode,
       dates.invoiceDate,
     );
 
@@ -882,8 +884,8 @@ export async function updateInvoice(
       ? await resolveExchangeRate(
           db,
           session.organizationId,
-          settings.currency,
           input.currencyCode,
+          settings.currency,
           dates.invoiceDate,
         )
       : new Decimal(existing.exchangeRate.toString());
@@ -1316,7 +1318,11 @@ export async function sendInvoice(
       ].join("\u001f"))
       .digest("hex");
 
-    const recordFailure = async (message: string, providerName?: string) => {
+    const recordFailure = async (
+      message: string,
+      providerName?: string,
+      attachmentData: Uint8Array<ArrayBuffer> | null = null,
+    ) => {
       const lastError = message.slice(0, 500);
       try {
         await db.$transaction(async (tx) => {
@@ -1324,10 +1330,7 @@ export async function sendInvoice(
             where: { organizationId: session.organizationId, idempotencyKey },
             select: { id: true },
           });
-          const outboxData = {
-            organizationId: session.organizationId,
-            entityType: EntityType.INVOICE,
-            entityId: id,
+          const outboxData = buildFailedInvoiceOutboxData({
             invoiceId: id,
             toAddress,
             ccAddresses,
@@ -1335,15 +1338,11 @@ export async function sendInvoice(
             subject: email.subject,
             bodyText: email.text,
             bodyHtml: email.html,
-            templateKey: "invoice-delivery-v1",
             attachmentName: `${existing.invoiceNumber}.pdf`,
-            attachmentMimeType: "application/pdf",
-            provider: providerName ?? null,
+            attachmentData,
+            providerName,
             lastError,
-            status: OutboxStatus.FAILED,
-            purpose: "INVOICE_SEND",
-            nextAttemptAt: new Date(),
-          };
+          });
           if (prior) {
             await tx.emailOutbox.update({
               where: { id: prior.id },
@@ -1351,7 +1350,13 @@ export async function sendInvoice(
             });
           } else {
             await tx.emailOutbox.create({
-              data: { ...outboxData, idempotencyKey, attempts: 1, scheduledAt: new Date() },
+              data: {
+                ...outboxData,
+                organizationId: session.organizationId,
+                idempotencyKey,
+                attempts: 1,
+                scheduledAt: new Date(),
+              },
             });
           }
           await tx.invoice.update({
@@ -1377,19 +1382,6 @@ export async function sendInvoice(
       }
     };
 
-    let config;
-    let provider;
-    try {
-      config = loadEmailConfig();
-      provider = createEmailProvider(config);
-    } catch {
-      await recordFailure("Email delivery is not configured.");
-      throw new DomainError(
-        ErrorCodes.EMAIL_CONFIGURATION,
-        "Email delivery is not configured. Contact your administrator.",
-      );
-    }
-
     let pdf: Buffer;
     try {
       pdf = await generateInvoicePdf({
@@ -1397,10 +1389,23 @@ export async function sendInvoice(
         status: nextStatus,
       });
     } catch {
-      await recordFailure("Invoice PDF generation failed.", provider.name);
+      await recordFailure("Invoice PDF generation failed.", undefined, null);
       throw new DomainError(
         ErrorCodes.PDF_GENERATION,
         "The invoice PDF could not be generated. Please try again.",
+      );
+    }
+
+    let config;
+    let provider;
+    try {
+      config = loadEmailConfig();
+      provider = createEmailProvider(config);
+    } catch {
+      await recordFailure("Email delivery is not configured.", undefined, Uint8Array.from(pdf));
+      throw new DomainError(
+        ErrorCodes.EMAIL_CONFIGURATION,
+        "Email delivery is not configured. Contact your administrator.",
       );
     }
 
@@ -1478,7 +1483,7 @@ export async function sendInvoice(
       const sent = await provider.send(message);
       providerMessageId = sent.providerMessageId;
     } catch {
-      await recordFailure("The email provider rejected the message.", provider.name);
+      await recordFailure("The email provider rejected the message.", provider.name, Uint8Array.from(pdf));
       throw new DomainError(
         ErrorCodes.EMAIL_DELIVERY,
         "The invoice email could not be delivered. The invoice was not marked as sent.",
@@ -1499,8 +1504,8 @@ export async function sendInvoice(
           lastError: null,
         },
       });
-      await tx.invoice.update({
-        where: { id },
+      const claimed = await tx.invoice.updateMany({
+        where: { id, status: existing.status, version: existing.version },
         data: {
           status: nextStatus,
           searchText: refreshedSearchText(existing, { status: nextStatus }),
@@ -1515,6 +1520,9 @@ export async function sendInvoice(
           ...(action === "SEND" ? { version: { increment: 1 } } : {}),
         },
       });
+      if (claimed.count !== 1) {
+        throw new ConflictError("Invoice changed while it was being sent. Reload and try again.");
+      }
       await tx.invoiceEvent.create({
         data: {
           organizationId: session.organizationId,
@@ -1555,8 +1563,8 @@ export async function markInvoiceViewed(id: string): Promise<Result<{ status: Db
     const nextStatus = transition(existing.status, "VIEW");
 
     await db.$transaction(async (tx) => {
-      await tx.invoice.update({
-        where: { id },
+      const claimed = await tx.invoice.updateMany({
+        where: { id, status: existing.status, version: existing.version },
         data: {
           status: nextStatus,
           searchText: refreshedSearchText(existing, { status: nextStatus }),
@@ -1565,6 +1573,9 @@ export async function markInvoiceViewed(id: string): Promise<Result<{ status: Db
           version: { increment: 1 },
         },
       });
+      if (claimed.count !== 1) {
+        throw new ConflictError("Invoice changed while it was being viewed. Reload and try again.");
+      }
       await tx.invoiceEvent.create({
         data: {
           organizationId: session.organizationId,
@@ -1606,8 +1617,8 @@ export async function cancelInvoice(id: string, reason: string): Promise<Result<
     }
 
     await db.$transaction(async (tx) => {
-      await tx.invoice.update({
-        where: { id },
+      const claimed = await tx.invoice.updateMany({
+        where: { id, status: existing.status, version: existing.version },
         data: {
           status: nextStatus,
           searchText: refreshedSearchText(existing, { status: nextStatus }),
@@ -1616,6 +1627,9 @@ export async function cancelInvoice(id: string, reason: string): Promise<Result<
           version: { increment: 1 },
         },
       });
+      if (claimed.count !== 1) {
+        throw new ConflictError("Invoice changed while it was being cancelled. Reload and try again.");
+      }
       await tx.invoiceEvent.create({
         data: {
           organizationId: session.organizationId,
@@ -1800,6 +1814,7 @@ export async function recordPayment(input: RecordPaymentInput): Promise<Result<{
         exchangeRate: string;
         total: string;
         status: DbInvoiceStatus;
+        version: number;
       }[]>`
         SELECT
           id,
@@ -1808,7 +1823,8 @@ export async function recordPayment(input: RecordPaymentInput): Promise<Result<{
           "base_currency_code"::text AS "baseCurrencyCode",
           "exchange_rate"::text AS "exchangeRate",
           total::text AS total,
-          status
+          status,
+          version
         FROM "Invoice"
         WHERE id = ${existing.id}::uuid AND "organization_id" = ${session.organizationId}::uuid
         FOR UPDATE
@@ -1849,7 +1865,7 @@ export async function recordPayment(input: RecordPaymentInput): Promise<Result<{
           currencyCode: row.currencyCode as CurrencyCode,
           baseCurrencyCode: row.baseCurrencyCode as CurrencyCode,
           exchangeRate,
-          amountInBaseCurrency: roundMoney(amount.times(exchangeRate)),
+          amountInBaseCurrency: convertDocumentAmountToBase(amount, exchangeRate),
           paidAt: input.paidAt,
           method: input.method ?? PaymentMethod.OTHER,
           reference: input.reference ?? null,
@@ -1861,8 +1877,8 @@ export async function recordPayment(input: RecordPaymentInput): Promise<Result<{
         },
       });
 
-      await tx.invoice.update({
-        where: { id: row.id },
+      const claimed = await tx.invoice.updateMany({
+        where: { id: row.id, status: row.status, version: row.version },
         data: {
           amountPaid: finalAmountPaid,
           balanceDue: finalBalanceDue,
@@ -1871,6 +1887,9 @@ export async function recordPayment(input: RecordPaymentInput): Promise<Result<{
           version: { increment: 1 },
         },
       });
+      if (claimed.count !== 1) {
+        throw new ConflictError("Invoice changed while the payment was being recorded. Reload and try again.");
+      }
       await tx.invoiceEvent.create({
         data: {
           organizationId: session.organizationId,

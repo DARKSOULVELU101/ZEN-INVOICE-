@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master, "fix/**", "feat/**"]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: zen_invoice_e2e
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d zen_invoice_e2e"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Install Playwright browser
+        run: npx playwright install --with-deps chromium
+
+      - name: Install Python dependencies
+        run: python -m pip install -r services/email-api/requirements-dev.txt
+
+      - name: Verify unit, static, build, and production audit gates
+        run: npm run verify
+
+      - name: Run browser end-to-end flow
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/zen_invoice_e2e?schema=public
+          AUTH_MODE: production
+          AUTH_SESSION_SECRET: test-only-session-secret-change-me-0001
+          AUTH_TRUST_PROXY_HEADERS: "false"
+          ADMIN_EMAIL: e2e-admin@example.test
+          ADMIN_PASSWORD: E2ePassw0rd!Test
+          ADMIN_NAME: E2E Administrator
+          EMAIL_PROVIDER: EMAIL_API
+          EMAIL_API_URL: https://127.0.0.1:4010
+          EMAIL_API_TOKEN: e2e-email-token
+          EMAIL_FROM: E2E Invoice <invoice@example.com>
+          EMAIL_EVENT_WEBHOOK_TOKEN: e2e-webhook-token
+          SES_SNS_TOPIC_ARN: arn:aws:sns:ap-south-1:000000000000:e2e-invoice-events
+          CRON_SECRET: e2e-cron-secret
+          AWS_REGION: ap-south-1
+          PDF_STORAGE_PRIMARY: SUPABASE
+          SUPABASE_URL: https://127.0.0.1:4010
+          SUPABASE_STORAGE_BUCKET: e2e-invoices
+          SUPABASE_SERVICE_ROLE_KEY: e2e-supabase-service-role-key
+        run: npm run test:e2e
+
+      - name: Run email bridge tests
+        run: python -m pytest services/email-api/tests -q

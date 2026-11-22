@@ -6,6 +6,7 @@ const nextConfig: NextConfig = {
   outputFileTracingIncludes: {
     "/*": [
       "./node_modules/@react-pdf/font/node_modules/pdfkit/js/standard-fonts/**/*",
+      "./node_modules/@react-pdf/renderer/node_modules/pdfkit/js/standard-fonts/**/*",
       "./node_modules/pdfkit/js/standard-fonts/**/*",
     ],
   },
