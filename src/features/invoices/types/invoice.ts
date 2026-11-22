@@ -126,6 +126,13 @@ export interface InvoiceDetail extends InvoiceListItem {
   customerCompany: string | null;
   emailDeliveryStatus: "NOT_SENT" | "DELIVERED" | "FAILED";
   emailDeliveredAt: string | null;
+  viewStatus: "UNVIEWED" | "VIEWED";
+  viewedAt: string | null;
+  pdfUrl: string | null;
+  pdfGeneratedAt: string | null;
+  pdfVersion: number;
+  printedAt: string | null;
+  lastExportedAt: string | null;
   items: InvoiceLineDto[];
   events: InvoiceEventDto[];
   payments: PaymentDto[];

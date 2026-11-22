@@ -5,6 +5,8 @@ export interface InvoiceEmailInput {
   companyName: string;
   amount: string;
   dueDate: string;
+  subject?: string;
+  message?: string;
 }
 
 export interface InvoiceEmailContent {
@@ -33,12 +35,13 @@ export function buildInvoiceEmail(input: InvoiceEmailInput): InvoiceEmailContent
   const customer = input.customerName.trim() || "Customer";
   const company = input.customerCompany?.trim();
   const dueDate = displayDueDate(input.dueDate);
-  const subject = `Invoice ${input.invoiceNumber} from ${input.companyName}`;
+  const subject = input.subject?.trim() || `Invoice ${input.invoiceNumber} from ${input.companyName}`;
+  const customMessage = input.message?.trim();
 
   const text = [
     `Dear ${customer},`,
     "",
-    `Please find attached your invoice from ${input.companyName}.`,
+    customMessage || `Please find attached your invoice from ${input.companyName}.`,
     ...(company ? [`Company: ${company}`] : []),
     "",
     `Invoice Number: ${input.invoiceNumber}`,
@@ -56,7 +59,9 @@ export function buildInvoiceEmail(input: InvoiceEmailInput): InvoiceEmailContent
     '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:600px;margin:0 auto;background:#ffffff;border:1px solid #e4e4e7;border-radius:12px;">',
     '<tr><td style="padding:32px;">',
     `<p style="margin:0 0 20px;font-size:16px;">Dear ${escapeHtml(customer)},</p>`,
-    `<p style="margin:0 0 20px;font-size:14px;line-height:22px;">Please find attached your invoice from <strong>${escapeHtml(input.companyName)}</strong>.</p>`,
+    customMessage
+      ? `<p style="margin:0 0 20px;font-size:14px;line-height:22px;">${escapeHtml(customMessage).replace(/\n/g, "<br />")}</p>`
+      : `<p style="margin:0 0 20px;font-size:14px;line-height:22px;">Please find attached your invoice from <strong>${escapeHtml(input.companyName)}</strong>.</p>`,
     company ? `<p style="margin:0 0 20px;font-size:14px;color:#52525b;">Company: ${escapeHtml(company)}</p>` : "",
     '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin:24px 0;">',
     '<tr><td style="padding:10px 0;border-bottom:1px solid #e4e4e7;font-size:13px;color:#71717a;">Invoice Number</td>',

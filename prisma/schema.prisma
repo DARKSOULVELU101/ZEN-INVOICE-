@@ -124,6 +124,14 @@ enum InvoiceEventType {
   CANCELLED
   REVISION_CREATED
   EMAIL_FAILED
+  PDF_GENERATED
+  PDF_DOWNLOADED
+  PRINTED
+}
+
+enum ViewStatus {
+  UNVIEWED
+  VIEWED
 }
 
 enum PaymentStatus {
@@ -174,6 +182,8 @@ enum AuditAction {
   LOGIN
   LOGOUT
   PERMISSION_CHANGE
+  EXPORT
+  PRINT
 }
 
 enum OutboxStatus {
@@ -200,6 +210,7 @@ model Organization {
   name             String
   slug             String             @unique
   legalName        String?
+  logoUrl          String?            @map("logo_url")
   taxId            String?
   gstin            String?            @db.VarChar(15)
   stateCode        String?            @db.VarChar(2)
@@ -222,6 +233,7 @@ model Organization {
   taxes               Tax[]
   numberSequences     NumberSequence[]
   invoices            Invoice[]
+  invoiceDocuments    InvoiceDocument[]
   payments            Payment[]
   exchangeRates       ExchangeRate[]
   auditLogs           AuditLog[]
@@ -530,62 +542,71 @@ model NumberSequence {
 
 model Invoice {
   id                      String               @id @default(uuid()) @db.Uuid
-  organizationId          String               @db.Uuid
+  organizationId          String               @db.Uuid @map("organization_id")
   organization            Organization         @relation(fields: [organizationId], references: [id], onDelete: Restrict)
-  customerId              String               @db.Uuid
+  customerId              String               @db.Uuid @map("customer_id")
   customer                Customer             @relation(fields: [customerId], references: [id], onDelete: Restrict)
-  branchId                String?              @db.Uuid
+  branchId                String?              @db.Uuid @map("branch_id")
   branch                  Branch?              @relation(fields: [branchId], references: [id], onDelete: SetNull)
-  invoiceNumber           String
+  invoiceNumber           String               @map("invoice_number")
   status                  InvoiceStatus        @default(DRAFT)
+  viewStatus              ViewStatus           @default(UNVIEWED) @map("view_status")
   version                 Int                  @default(1)
-  currencyCode            CurrencyCode         @default(INR)
-  baseCurrencyCode        CurrencyCode         @default(INR)
-  exchangeRate            Decimal              @default(1) @db.Decimal(19, 8)
+  currencyCode            CurrencyCode         @default(INR) @map("currency_code")
+  baseCurrencyCode        CurrencyCode         @default(INR) @map("base_currency_code")
+  exchangeRate            Decimal              @default(1) @db.Decimal(19, 8) @map("exchange_rate")
   gstin                   String?              @db.VarChar(15)
-  sourceStateCode         String?              @db.VarChar(2)
-  destinationStateCode    String?              @db.VarChar(2)
-  placeOfSupplyCode       String?              @db.VarChar(2)
-  isReverseCharge         Boolean              @default(false)
-  invoiceDate             DateTime             @db.Date
-  issueDate               DateTime             @db.Date
-  paymentTerms            Int                  @default(30)
-  dueDate                 DateTime             @db.Date
+  sourceStateCode         String?              @db.VarChar(2) @map("source_state_code")
+  destinationStateCode    String?              @db.VarChar(2) @map("destination_state_code")
+  placeOfSupplyCode       String?              @db.VarChar(2) @map("place_of_supply_code")
+  isReverseCharge         Boolean              @default(false) @map("is_reverse_charge")
+  invoiceDate             DateTime             @db.Date @map("invoice_date")
+  issueDate               DateTime             @db.Date @map("issue_date")
+  paymentTerms            Int                  @default(30) @map("payment_terms")
+  dueDate                 DateTime             @db.Date @map("due_date")
   reference               String?
   notes                   String?
   terms                   String?
   footer                  String?
   subtotal                Decimal              @default(0) @db.Decimal(19, 4)
-  discountAmount          Decimal              @default(0) @db.Decimal(19, 4)
-  taxableAmount           Decimal              @default(0) @db.Decimal(19, 4)
-  shippingAmount          Decimal              @default(0) @db.Decimal(19, 4)
-  roundOffAmount          Decimal              @default(0) @db.Decimal(19, 4)
-  cgstAmount              Decimal              @default(0) @db.Decimal(19, 4)
-  sgstAmount              Decimal              @default(0) @db.Decimal(19, 4)
-  igstAmount              Decimal              @default(0) @db.Decimal(19, 4)
-  taxAmount               Decimal              @default(0) @db.Decimal(19, 4)
+  discountAmount          Decimal              @default(0) @db.Decimal(19, 4) @map("discount_amount")
+  taxableAmount           Decimal              @default(0) @db.Decimal(19, 4) @map("taxable_amount")
+  shippingAmount          Decimal              @default(0) @db.Decimal(19, 4) @map("shipping_amount")
+  roundOffAmount          Decimal              @default(0) @db.Decimal(19, 4) @map("round_off_amount")
+  cgstAmount              Decimal              @default(0) @db.Decimal(19, 4) @map("cgst_amount")
+  sgstAmount              Decimal              @default(0) @db.Decimal(19, 4) @map("sgst_amount")
+  igstAmount              Decimal              @default(0) @db.Decimal(19, 4) @map("igst_amount")
+  taxAmount               Decimal              @default(0) @db.Decimal(19, 4) @map("tax_amount")
   total                   Decimal              @default(0) @db.Decimal(19, 4)
-  amountPaid              Decimal              @default(0) @db.Decimal(19, 4)
-  balanceDue              Decimal              @default(0) @db.Decimal(19, 4)
-  sentAt                  DateTime?
-  viewedAt                DateTime?
-  cancelledAt             DateTime?
-  cancelReason            String?
-  emailDeliveryStatus     EmailDeliveryStatus  @default(NOT_SENT)
-  emailDeliveredAt        DateTime?
-  emailLastError          String?
-  customerNameSnapshot    String?
-  customerEmailSnapshot   String?
-  customerCompanySnapshot String?
-  createdById             String               @db.Uuid
+  amountPaid              Decimal              @default(0) @db.Decimal(19, 4) @map("amount_paid")
+  balanceDue              Decimal              @default(0) @db.Decimal(19, 4) @map("balance_due")
+  sentAt                  DateTime?            @map("sent_at")
+  viewedAt                DateTime?            @map("viewed_at")
+  cancelledAt             DateTime?            @map("cancelled_at")
+  cancelReason            String?              @map("cancel_reason")
+  emailDeliveryStatus     EmailDeliveryStatus  @default(NOT_SENT) @map("email_status")
+  emailDeliveredAt        DateTime?            @map("email_delivered_at")
+  emailLastError          String?              @map("email_last_error")
+  customerNameSnapshot    String?              @map("customer_name_snapshot")
+  customerEmailSnapshot   String?              @map("customer_email_snapshot")
+  customerCompanySnapshot String?              @map("customer_company_snapshot")
+  pdfUrl                  String?              @map("pdf_url")
+  pdfKey                  String?              @map("pdf_key")
+  pdfGeneratedAt          DateTime?            @map("pdf_generated_at")
+  pdfHash                 String?              @db.VarChar(64) @map("pdf_hash")
+  pdfVersion              Int                  @default(0) @map("pdf_version")
+  printedAt               DateTime?            @map("printed_at")
+  lastExportedAt          DateTime?            @map("last_exported_at")
+  searchText              String               @default("") @map("search_text")
+  createdById             String               @db.Uuid @map("created_by_id")
   createdBy               User                 @relation("InvoiceCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
-  approvedById            String?              @db.Uuid
+  approvedById            String?              @db.Uuid @map("approved_by_id")
   approvedBy              User?                @relation("InvoiceApprovedBy", fields: [approvedById], references: [id], onDelete: SetNull)
-  sentById                String?              @db.Uuid
+  sentById                String?              @db.Uuid @map("sent_by_id")
   sentBy                  User?                @relation("InvoiceSentBy", fields: [sentById], references: [id], onDelete: SetNull)
-  createdAt               DateTime             @default(now())
-  updatedAt               DateTime             @updatedAt
-  deletedAt               DateTime?
+  createdAt               DateTime             @default(now()) @map("created_at")
+  updatedAt               DateTime             @updatedAt @map("updated_at")
+  deletedAt               DateTime?            @map("deleted_at")
   items                   InvoiceItem[]
   events                  InvoiceEvent[]
   revisions               InvoiceRevision[]
@@ -593,6 +614,7 @@ model Invoice {
   payments                Payment[]            @relation("InvoicePayments")
   reportInvoices          ReportInvoice[]
   emailOutbox             EmailOutbox[]
+  documents               InvoiceDocument[]
 
   @@unique([organizationId, invoiceNumber])
   @@index([organizationId, createdAt(sort: Desc), id(sort: Desc)])
@@ -605,6 +627,10 @@ model Invoice {
   @@index([organizationId, total(sort: Desc)])
   @@index([organizationId, deletedAt, issueDate(sort: Desc)])
   @@index([organizationId, deletedAt, invoiceDate(sort: Desc)])
+  @@index([organizationId, customerId])
+  @@index([organizationId, status])
+  @@index([organizationId, dueDate])
+  @@index([organizationId, searchText])
 }
 
 model InvoiceItem {
@@ -685,6 +711,24 @@ model InvoiceEvent {
   createdAt      DateTime         @default(now())
 
   @@index([invoiceId, createdAt(sort: Desc)])
+}
+
+model InvoiceDocument {
+  id             String       @id @default(uuid()) @db.Uuid
+  organizationId String       @db.Uuid @map("organization_id")
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  invoiceId      String       @db.Uuid @map("invoice_id")
+  invoice        Invoice      @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  storageKey     String       @map("storage_key")
+  version        Int
+  fileSizeBytes  Int          @map("file_size_bytes")
+  sha256         String       @db.VarChar(64)
+  mimeType       String       @default("application/pdf") @map("mime_type")
+  generatedAt    DateTime     @map("generated_at")
+  createdAt      DateTime     @default(now()) @map("created_at")
+
+  @@unique([invoiceId, version], name: "InvoiceDocument_invoice_version_key")
+  @@index([organizationId, invoiceId])
 }
 
 model Payment {

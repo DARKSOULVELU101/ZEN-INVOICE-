@@ -36,6 +36,13 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   );
 }
 
+function titleCaseEvent(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
 export function InvoiceDetailView({ invoice }: { invoice: InvoiceDetail }) {
   const [tab, setTab] = React.useState<Tab>("overview");
 
@@ -69,6 +76,9 @@ export function InvoiceDetailView({ invoice }: { invoice: InvoiceDetail }) {
         <StatusBadge status={invoice.displayStatus} />
         <span className="text-sm text-muted-foreground">Due {formatDate(invoice.dueDate)}</span>
         <span className="text-sm text-muted-foreground">{invoice.currencyCode}</span>
+        <span className="text-sm text-muted-foreground">
+          Email: {invoice.emailDeliveryStatus.toLowerCase()} · View: {invoice.viewStatus.toLowerCase()}
+        </span>
         <Button asChild variant="ghost" size="sm">
           <Link href={ROUTES.invoices}>
             <ArrowLeft aria-hidden="true" /> Back to list
@@ -277,7 +287,7 @@ export function InvoiceDetailView({ invoice }: { invoice: InvoiceDetail }) {
                 <li key={event.id} className="flex gap-3">
                   <span className="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-primary" aria-hidden="true" />
                   <div>
-                    <p className="text-sm font-medium">{event.type.replace(/_/g, " ")}</p>
+                    <p className="text-sm font-medium">{titleCaseEvent(event.type)}</p>
                     {event.message ? <p className="mt-0.5 text-sm text-muted-foreground">{event.message}</p> : null}
                     <p className="mt-0.5 text-xs text-muted-foreground">
                       {formatDateTime(event.createdAt)}{event.actorName ? ` · ${event.actorName}` : ""}
@@ -299,6 +309,14 @@ export function InvoiceDetailView({ invoice }: { invoice: InvoiceDetail }) {
             <dl className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
               <Field label="Version">{invoice.version}</Field>
               <Field label="Revisions">{invoice.revisionCount}</Field>
+              <Field label="PDF version">{invoice.pdfVersion ?? 0}</Field>
+              <Field label="PDF generated">{invoice.pdfGeneratedAt ? formatDateTime(invoice.pdfGeneratedAt) : "—"}</Field>
+              <Field label="Printed">{invoice.printedAt ? formatDateTime(invoice.printedAt) : "—"}</Field>
+              <Field label="Last exported">{invoice.lastExportedAt ? formatDateTime(invoice.lastExportedAt) : "—"}</Field>
+              <Field label="Email status">{invoice.emailDeliveryStatus.toLowerCase()}</Field>
+              <Field label="Email delivered">{invoice.emailDeliveredAt ? formatDateTime(invoice.emailDeliveredAt) : "—"}</Field>
+              <Field label="View status">{invoice.viewStatus.toLowerCase()}</Field>
+              <Field label="Viewed">{invoice.viewedAt ? formatDateTime(invoice.viewedAt) : "—"}</Field>
               <Field label="Created">{formatDateTime(invoice.createdAt)}</Field>
               <Field label="Sent">{invoice.sentAt ? formatDateTime(invoice.sentAt) : "—"}</Field>
               <Field label="Cancelled">{invoice.cancelledAt ? formatDateTime(invoice.cancelledAt) : "—"}</Field>

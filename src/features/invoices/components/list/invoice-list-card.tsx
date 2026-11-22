@@ -16,6 +16,8 @@ export function InvoiceListCard({
   onView,
   onEdit,
   onSend,
+  onPreview,
+  onDownload,
   onDuplicate,
   onDelete,
 }: {
@@ -28,11 +30,15 @@ export function InvoiceListCard({
   onView: () => void;
   onEdit: () => void;
   onSend: () => void;
+  onPreview: () => void;
+  onDownload: () => void;
   onDuplicate: () => void;
   onDelete: () => void;
 }) {
   const actions: MenuAction[] = [
     { label: "View details", onSelect: onView },
+    { label: "Preview PDF", onSelect: onPreview, disabled: pending },
+    { label: "Export PDF", onSelect: onDownload, disabled: pending },
     { label: "Edit", onSelect: onEdit, disabled: !canEdit || pending },
     { label: sendLabel, onSelect: onSend, disabled: !canSend || pending },
     { label: "Duplicate", onSelect: onDuplicate, disabled: pending },

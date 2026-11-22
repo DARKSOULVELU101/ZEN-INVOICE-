@@ -10,7 +10,7 @@ function getFormatter(locale: string, currency: string) {
     formatter = new Intl.NumberFormat(locale, {
       style: "currency",
       currency,
-      currencyDisplay: "code",
+      currencyDisplay: "symbol",
       minimumFractionDigits: 2,
       maximumFractionDigits: 2,
     });

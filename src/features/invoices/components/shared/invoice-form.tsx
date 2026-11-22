@@ -6,7 +6,7 @@ import { useRouter } from "next/navigation";
 import { useFieldArray, useForm, type Resolver } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { toast } from "sonner";
-import { Check, Plus, Trash2 } from "lucide-react";
+import { Check, Eye, FileText, Plus, Printer, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -41,7 +41,8 @@ import type { CustomerOption } from "@/features/partners/types/customer";
 import type { ProductOption } from "@/features/catalog/types/product";
 import type { InvoiceDetail } from "../../types/invoice";
 import {
-  createInvoiceAction, saveDraftAction, sendInvoiceAction, updateInvoiceAction,
+  createInvoiceAction, downloadInvoicePdfAction, previewInvoicePdfAction,
+  saveDraftAction, sendInvoiceAction, updateInvoiceAction,
 } from "../../actions/invoice-actions";
 import { createCustomerAction, searchCustomersAction } from "@/features/partners/actions/customer-actions";
 import { createProductAction, searchProductsAction } from "@/features/catalog/actions/product-actions";
@@ -305,11 +306,11 @@ export function InvoiceForm({
       return;
     }
 
-    if (selectedIntent === "send" && mode === "create") {
+    if (selectedIntent === "send") {
       const sent = await sendInvoiceAction(result.data.id);
       if (!sent.ok) {
         setIntentError(sent.error.message);
-        toast.error("Invoice saved as draft. Email not delivered.", { description: sent.error.message });
+        toast.error("Invoice saved. Email not delivered.", { description: sent.error.message });
         setSubmitting(null);
         router.push(ROUTES.invoiceDetail(result.data.id));
         return;
@@ -327,6 +328,42 @@ export function InvoiceForm({
 
   const onSave = form.handleSubmit((values) => submit(values, "save"));
   const onSaveAndSend = form.handleSubmit((values) => submit(values, "send"));
+
+  const savedInvoiceId = mode === "edit" ? detail?.id : draftId;
+
+  const openPreview = async () => {
+    if (!savedInvoiceId) return;
+    setSubmitting("save");
+    const result = await previewInvoicePdfAction(savedInvoiceId);
+    setSubmitting(null);
+    if (!result.ok) {
+      toast.error(result.error.message);
+      return;
+    }
+    window.open(result.data.url, "_blank", "noopener,noreferrer");
+  };
+
+  const exportPdf = async () => {
+    if (!savedInvoiceId) return;
+    setSubmitting("save");
+    const result = await downloadInvoicePdfAction(savedInvoiceId);
+    setSubmitting(null);
+    if (!result.ok) {
+      toast.error(result.error.message);
+      return;
+    }
+    const link = document.createElement("a");
+    link.href = result.data.url;
+    link.download = `${result.data.filename}.pdf`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+  };
+
+  const printPdf = () => {
+    if (!savedInvoiceId) return;
+    window.open(`/invoices/${savedInvoiceId}/print`, "_blank", "noopener,noreferrer");
+  };
 
   React.useEffect(() => {
     if (mode !== "create" || submitting) return;
@@ -773,16 +810,25 @@ export function InvoiceForm({
               : "Drafts save automatically after the customer and first line item are complete."}
           </p>
           <div className="flex flex-wrap items-center gap-2">
+            <Button type="button" variant="ghost" onClick={openPreview} disabled={!savedInvoiceId || Boolean(submitting)}>
+              <Eye aria-hidden="true" /> Preview PDF
+            </Button>
+            <Button type="button" variant="ghost" onClick={printPdf} disabled={!savedInvoiceId || Boolean(submitting)}>
+              <Printer aria-hidden="true" /> Print
+            </Button>
+            <Button type="button" variant="ghost" onClick={() => void exportPdf()} disabled={!savedInvoiceId || Boolean(submitting)}>
+              <FileText aria-hidden="true" /> Export PDF
+            </Button>
             <Button type="button" variant="ghost" onClick={() => router.back()} disabled={Boolean(submitting)}>
               Cancel
             </Button>
             <Button type="submit" variant="outline" disabled={Boolean(submitting)}>
               {submitting === "save" ? "Saving…" : mode === "create" ? (draftId ? "Update draft" : "Save draft") : "Save changes"}
             </Button>
-            {mode === "create" ? (
+            {mode === "create" || detail?.status === "DRAFT" ? (
               <Button type="button" onClick={onSaveAndSend} disabled={Boolean(submitting)}>
                 <Check aria-hidden="true" />
-                {submitting === "send" ? "Sending with PDF…" : "Save & send invoice"}
+                {submitting === "send" ? "Sending with PDF…" : mode === "create" ? "Save & send invoice" : "Send invoice"}
               </Button>
             ) : null}
           </div>

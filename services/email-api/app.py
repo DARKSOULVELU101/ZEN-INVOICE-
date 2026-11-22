@@ -1,6 +1,7 @@
 import base64
 import binascii
 import os
+import smtplib
 import ssl
 from email.message import EmailMessage
 from typing import Any

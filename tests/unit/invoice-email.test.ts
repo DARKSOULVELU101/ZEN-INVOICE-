@@ -44,4 +44,21 @@ describe("invoice delivery primitives", () => {
     expect(message.text).toContain("01-12-2026");
     expect(message.html).toContain("<strong>INV-2026-001</strong>");
   });
+
+  it("uses custom composer content and escapes HTML", () => {
+    const message = buildInvoiceEmail({
+      invoiceNumber: "INV-2026-002",
+      customerName: "Aarav",
+      companyName: "Zenbook ERP",
+      amount: "₹10,000.00",
+      dueDate: "2026-12-01",
+      subject: "Your invoice is ready",
+      message: "Please pay <before> 01-12-2026 & reply if needed.",
+    });
+
+    expect(message.subject).toBe("Your invoice is ready");
+    expect(message.text).toContain("Please pay <before> 01-12-2026 & reply if needed.");
+    expect(message.html).toContain("Please pay &lt;before&gt; 01-12-2026 &amp; reply if needed.");
+    expect(message.html).not.toContain("<before>");
+  });
 });

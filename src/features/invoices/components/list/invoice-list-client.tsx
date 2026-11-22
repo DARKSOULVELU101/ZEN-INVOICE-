@@ -32,7 +32,8 @@ import { queryToSearchParams, type InvoiceListQuery } from "@/features/invoices/
 import type { CustomerOption } from "@/features/partners/types/customer";
 import type { InvoiceListItem } from "@/features/invoices/types/invoice";
 import {
-  deleteInvoiceAction, duplicateInvoiceAction, resendInvoiceAction, sendInvoiceAction,
+  deleteInvoiceAction, downloadInvoicePdfAction, duplicateInvoiceAction,
+  previewInvoicePdfAction, resendInvoiceAction, sendInvoiceAction,
 } from "@/features/invoices/actions/invoice-actions";
 import { InvoiceListCard } from "./invoice-list-card";
 
@@ -143,6 +144,41 @@ export function InvoiceListClient({
     [router],
   );
 
+  const handlePreview = React.useCallback(
+    async (id: string) => {
+      setPending(true);
+      const result = await previewInvoicePdfAction(id);
+      setPending(false);
+      if (!result.ok) {
+        toast.error(result.error.message);
+        return;
+      }
+      window.open(result.data.url, "_blank", "noopener,noreferrer");
+    },
+    [],
+  );
+
+  const handleDownload = React.useCallback(
+    async (id: string) => {
+      setPending(true);
+      const result = await downloadInvoicePdfAction(id);
+      setPending(false);
+      if (!result.ok) {
+        toast.error(result.error.message);
+        return;
+      }
+      const link = document.createElement("a");
+      link.href = result.data.url;
+      link.download = `${result.data.filename}.pdf`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      toast.success("PDF exported", { description: `${result.data.filename}.pdf` });
+      router.refresh();
+    },
+    [router],
+  );
+
   const handleDuplicate = React.useCallback(
     async (id: string) => {
       setPending(true);
@@ -245,6 +281,8 @@ export function InvoiceListClient({
           const canResendNow = canTransition(invoice.status, "RESEND");
           const actions = [
             { label: "View details", onSelect: () => handleView(invoice.id) },
+            { label: "Preview PDF", onSelect: () => void handlePreview(invoice.id), disabled: pending },
+            { label: "Export PDF", onSelect: () => void handleDownload(invoice.id), disabled: pending },
             { label: "Edit", onSelect: () => handleEdit(invoice.id), disabled: !isEditable(invoice.status) || pending },
             ...(canSendNow || canResendNow
               ? [{
@@ -265,7 +303,10 @@ export function InvoiceListClient({
         },
       }),
     ],
-    [footerBalance, footerCurrency, footerTotal, handleDuplicate, handleEdit, handleSend, handleView, pending],
+    [
+      footerBalance, footerCurrency, footerTotal, handleDownload, handleDuplicate,
+      handleEdit, handlePreview, handleSend, handleView, pending,
+    ],
   );
 
   const table = useReactTable({
@@ -322,7 +363,7 @@ export function InvoiceListClient({
     <div className="space-y-4" aria-busy={isNavigating}>
       <div className="ui-panel space-y-4 p-4">
         <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_240px] xl:flex xl:items-end xl:justify-between">
-          <SearchBar value={query.q ?? ""} onSearch={onSearch} placeholder="Search invoice number or customer…" />
+          <SearchBar value={query.q ?? ""} onSearch={onSearch} placeholder="Search invoice, customer, status or amount…" />
           <div className="w-full lg:w-60">
             <label htmlFor="customerFilter" className="ui-label mb-1 block">Customer</label>
             <SearchableSelect
@@ -453,6 +494,8 @@ export function InvoiceListClient({
                   onView={() => handleView(invoice.id)}
                   onEdit={() => handleEdit(invoice.id)}
                   onSend={() => void handleSend(invoice.id, canTransition(invoice.status, "RESEND"))}
+                  onPreview={() => void handlePreview(invoice.id)}
+                  onDownload={() => void handleDownload(invoice.id)}
                   onDuplicate={() => void handleDuplicate(invoice.id)}
                   onDelete={() => setConfirmId(invoice.id)}
                 />

@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   AuditAction,
   CurrencyCode,
@@ -46,7 +46,13 @@ import {
 import { calculateInvoiceTotals, taxComponentFor, type TaxRateInput } from "../domain/totals";
 import { displayStatus, isEditable, transition } from "../domain/status";
 import { buildInvoiceEmail } from "./invoice-email-template";
-import { generateInvoicePdf, type InvoicePdfData } from "./invoice-pdf";
+import { assertInvoiceReadyForPdf, generateInvoicePdf, type InvoicePdfData } from "./invoice-pdf";
+import {
+  buildInvoicePdfKey,
+  buildInvoicePdfUri,
+  getInvoicePdfUrl,
+  storeInvoicePdf,
+} from "./invoice-storage";
 import { invoiceSortFields, type InvoiceFormOutput, type InvoiceListQuery } from "../schemas/invoice";
 import type { RecordPaymentInput } from "../schemas/payment";
 import type {
@@ -77,7 +83,7 @@ const invoiceInclude = {
   },
   organization: {
     select: {
-      id: true, name: true, legalName: true, gstin: true, stateCode: true,
+      id: true, name: true, legalName: true, logoUrl: true, gstin: true, stateCode: true,
       settings: true,
       branches: {
         where: { isPrimary: true, deletedAt: null },
@@ -98,6 +104,7 @@ const invoiceInclude = {
   },
   applications: { include: { payment: true } },
   revisions: { select: { id: true } },
+  documents: { orderBy: { version: "desc" as const }, take: 1 },
 } satisfies Prisma.InvoiceInclude;
 
 type InvoiceRecord = Prisma.InvoiceGetPayload<{ include: typeof invoiceInclude }>;
@@ -166,6 +173,38 @@ function mapListItem(record: InvoiceListRecord): InvoiceListItem {
     createdAt: record.createdAt.toISOString(),
     version: record.version,
   };
+}
+
+function buildInvoiceSearchText(input: {
+  invoiceNumber: string;
+  customerName: string;
+  status: string;
+  total: string;
+  reference?: string | null;
+  notes?: string | null;
+}): string {
+  return [
+    input.invoiceNumber,
+    input.customerName,
+    input.status,
+    input.total,
+    input.reference,
+    input.notes,
+  ].filter(Boolean).join(" ").toLowerCase();
+}
+
+function refreshedSearchText(
+  record: InvoiceRecord,
+  overrides: { status?: string; total?: DecimalInput } = {},
+): string {
+  return buildInvoiceSearchText({
+    invoiceNumber: record.invoiceNumber,
+    customerName: record.customer.displayName,
+    status: overrides.status ?? record.status,
+    total: new Decimal(overrides.total ?? record.total).toString(),
+    reference: record.reference,
+    notes: record.notes,
+  });
 }
 
 function mapLine(line: InvoiceRecord["items"][number]): InvoiceLineDto {
@@ -237,6 +276,13 @@ function mapDetail(record: InvoiceRecord): InvoiceDetail {
     customerCompany: record.customer.legalName ?? record.customer.displayName,
     emailDeliveryStatus: record.emailDeliveryStatus,
     emailDeliveredAt: dateString(record.emailDeliveredAt),
+    viewStatus: record.viewStatus,
+    viewedAt: dateString(record.viewedAt),
+    pdfUrl: record.pdfUrl,
+    pdfGeneratedAt: dateString(record.pdfGeneratedAt),
+    pdfVersion: record.pdfVersion,
+    printedAt: dateString(record.printedAt),
+    lastExportedAt: dateString(record.lastExportedAt),
     items: record.items.map(mapLine),
     events,
     payments,
@@ -270,6 +316,7 @@ function buildInvoicePdfData(record: InvoiceRecord): InvoicePdfData {
   return {
     companyName,
     companyLegalName: record.organization.legalName,
+    companyLogoUrl: record.organization.logoUrl,
     companyGstin: branch?.gstin ?? record.organization.gstin,
     companyAddressLines: addressLines(branch),
     customerName: record.customer.displayName,
@@ -278,6 +325,11 @@ function buildInvoicePdfData(record: InvoiceRecord): InvoicePdfData {
     customerEmail: record.customer.email,
     customerAddressLines: addressLines(customerAddress),
     invoiceNumber: record.invoiceNumber,
+    status: displayStatus(record.status, record.dueDate, record.balanceDue),
+    sourceStateCode: record.sourceStateCode,
+    destinationStateCode: record.destinationStateCode,
+    placeOfSupplyCode: record.placeOfSupplyCode ?? record.destinationStateCode ?? record.sourceStateCode,
+    isReverseCharge: record.isReverseCharge,
     issueDate: toCalendarDateInput(record.issueDate),
     invoiceDate: toCalendarDateInput(record.invoiceDate),
     dueDate: toCalendarDateInput(record.dueDate),
@@ -353,7 +405,7 @@ async function writeEvent(
 }
 
 function formatNumber(prefix: string, period: number, sequence: number, padding: number, suffix: string) {
-  return `${prefix}-${String(period).slice(-2)}-${String(sequence).padStart(padding, "0")}${suffix}`;
+  return `${prefix}-${period}-${String(sequence).padStart(padding, "0")}${suffix}`;
 }
 
 async function allocateNumber(
@@ -361,33 +413,34 @@ async function allocateNumber(
   documentType: DocumentType,
   prefix: string,
   organizationId: string,
+  padding = 5,
 ): Promise<string> {
   const period = new Date().getUTCFullYear();
   const scopeKey = "DEFAULT";
 
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    const existing = await db.numberSequence.findFirst({ where: { documentType, period, scopeKey } });
+  return db.$transaction(async (tx) => {
+    await tx.$executeRaw`
+      INSERT INTO "NumberSequence"
+        ("id", "organizationId", "documentType", "period", "scopeKey", "prefix", "suffix", "padding", "nextNumber", "createdAt", "updatedAt")
+      VALUES
+        (${randomUUID()}::uuid, ${organizationId}::uuid, ${documentType}::text::"DocumentType", ${period}, ${scopeKey}, ${prefix}, '', ${padding}, 2, NOW(), NOW())
+      ON CONFLICT ("organizationId", "documentType", "period", "scopeKey") DO NOTHING
+    `;
 
-    if (existing) {
-      const updated = await db.numberSequence.update({
-        where: { id: existing.id },
-        data: { nextNumber: { increment: 1 } },
-      });
-      return formatNumber(existing.prefix, period, updated.nextNumber - 1, existing.padding, existing.suffix);
-    }
+    const rows = await tx.$queryRaw<{ nextNumber: number; prefix: string; suffix: string; padding: number }[]>`
+      UPDATE "NumberSequence"
+      SET "nextNumber" = "nextNumber" + 1, "updatedAt" = NOW()
+      WHERE "organizationId" = ${organizationId}::uuid
+        AND "documentType" = ${documentType}::text::"DocumentType"
+        AND "period" = ${period}
+        AND "scopeKey" = ${scopeKey}
+      RETURNING "nextNumber" - 1 AS "nextNumber", "prefix", "suffix", "padding"
+    `;
 
-    try {
-      const created = await db.numberSequence.create({
-        data: { organizationId, documentType, period, scopeKey, prefix, nextNumber: 2 },
-      });
-      return formatNumber(created.prefix, period, 1, created.padding, created.suffix);
-    } catch (error) {
-      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") continue;
-      throw error;
-    }
-  }
-
-  throw new Error("Unable to allocate a document number after 3 attempts.");
+    const row = rows[0];
+    if (!row) throw new DomainError(ErrorCodes.INVARIANT, "Unable to allocate a document number.");
+    return formatNumber(row.prefix, period, row.nextNumber, row.padding, row.suffix);
+  });
 }
 
 async function loadSettings(db: Db, organizationId: string) {
@@ -602,8 +655,10 @@ export async function listInvoices(query: InvoiceListQuery): Promise<Result<Invo
     const where: Prisma.InvoiceWhereInput = { deletedAt: null };
     if (query.q) {
       where.OR = [
+        { searchText: { contains: query.q.toLowerCase(), mode: "insensitive" } },
         { invoiceNumber: { contains: query.q, mode: "insensitive" } },
         { customer: { displayName: { contains: query.q, mode: "insensitive" } } },
+        { customer: { legalName: { contains: query.q, mode: "insensitive" } } },
       ];
     }
     if (query.status) where.status = query.status;
@@ -686,7 +741,7 @@ export async function createInvoice(input: InvoiceFormOutput): Promise<Result<In
       sourceStateCode,
       destinationStateCode,
     });
-    const invoiceNumber = await allocateNumber(db, DocumentType.INVOICE, settings.prefix, session.organizationId);
+    const invoiceNumber = await allocateNumber(db, DocumentType.INVOICE, settings.prefix, session.organizationId, 6);
     const dates = deriveInvoiceDates(input.invoiceDate, input.paymentTerms);
     const baseCurrencyCode = settings.currency;
     const exchangeRate = await resolveExchangeRate(
@@ -704,6 +759,14 @@ export async function createInvoice(input: InvoiceFormOutput): Promise<Result<In
           customerId: input.customerId,
           invoiceNumber,
           status: "DRAFT",
+          searchText: buildInvoiceSearchText({
+            invoiceNumber,
+            customerName: customer.displayName,
+            status: "DRAFT",
+            total: prepared.total.toString(),
+            reference: input.reference,
+            notes: input.notes,
+          }),
           currencyCode: input.currencyCode,
           baseCurrencyCode,
           exchangeRate,
@@ -852,6 +915,14 @@ export async function updateInvoice(
           sourceStateCode,
           destinationStateCode,
           status: preservedStatus,
+          searchText: buildInvoiceSearchText({
+            invoiceNumber: existing.invoiceNumber,
+            customerName: customer.displayName,
+            status: preservedStatus,
+            total: prepared.total.toString(),
+            reference: input.reference,
+            notes: input.notes,
+          }),
           isReverseCharge: input.isReverseCharge ?? false,
           invoiceDate: dates.invoiceDate,
           issueDate: dates.issueDate,
@@ -936,6 +1007,158 @@ export async function deleteInvoice(id: string): Promise<Result<{ id: string }>>
   });
 }
 
+export interface InvoicePdfResult {
+  bytes: Buffer;
+  filename: string;
+  key: string;
+  version: number;
+  url: string;
+}
+
+async function ensureStoredInvoicePdf(
+  id: string,
+  auditAction: AuditAction,
+): Promise<{ result: InvoicePdfResult; record: InvoiceRecord }> {
+  const session = await requireSession();
+  requirePermission(session, "invoice:view");
+  const db = await getTenantDb();
+  const record = await findInvoice(db, id);
+  await assertAccess(session, record);
+
+  const data = buildInvoicePdfData(record);
+  assertInvoiceReadyForPdf(data);
+  const bytes = await generateInvoicePdf(data);
+  const hash = createHash("sha256").update(bytes).digest("hex");
+  const filename = record.invoiceNumber.replace(/[^A-Za-z0-9_-]+/g, "-");
+
+  let key: string;
+  let version = record.pdfVersion ?? 0;
+  let generatedAt = record.pdfGeneratedAt ?? new Date();
+
+  if (!record.pdfKey || record.pdfHash !== hash || !record.pdfVersion) {
+    version = (record.documents[0]?.version ?? record.pdfVersion ?? 0) + 1;
+    const nextKey = buildInvoicePdfKey({
+      organizationId: session.organizationId,
+      invoiceId: id,
+      invoiceNumber: record.invoiceNumber,
+      version,
+      hash,
+    });
+
+    await storeInvoicePdf(nextKey, bytes);
+    generatedAt = new Date();
+    key = nextKey;
+
+    await db.$transaction(async (tx) => {
+      await tx.invoice.update({
+        where: { id },
+        data: {
+          pdfKey: nextKey,
+          pdfUrl: buildInvoicePdfUri(nextKey),
+          pdfHash: hash,
+          pdfVersion: version,
+          pdfGeneratedAt: generatedAt,
+        },
+      });
+      await tx.invoiceDocument.create({
+        data: {
+          organizationId: session.organizationId,
+          invoiceId: id,
+          storageKey: nextKey,
+          version,
+          fileSizeBytes: bytes.byteLength,
+          sha256: hash,
+          generatedAt,
+        },
+      });
+      await tx.invoiceEvent.create({
+        data: {
+          organizationId: session.organizationId,
+          invoiceId: id,
+          actorId: session.user.id,
+          type: InvoiceEventType.PDF_GENERATED,
+          message: `PDF version ${version} generated`,
+        },
+      });
+      await tx.auditLog.create({
+        data: {
+          organizationId: session.organizationId,
+          actorId: session.user.id,
+          action: auditAction,
+          entityType: EntityType.INVOICE,
+          entityId: id,
+          after: { pdfVersion: version, storageKey: nextKey } as Prisma.InputJsonValue,
+          correlationId: randomUUID(),
+        },
+      });
+    });
+  } else {
+    key = record.pdfKey;
+  }
+
+  const url = await getInvoicePdfUrl({ key, filename, disposition: "attachment", expiresIn: 300 });
+  return {
+    result: { bytes, filename, key, version, url },
+    record: await findInvoice(db, id),
+  };
+}
+
+export async function previewInvoicePdf(id: string): Promise<Result<InvoicePdfResult>> {
+  return toResultAsync(async () => {
+    const { result } = await ensureStoredInvoicePdf(id, AuditAction.VIEW);
+    return {
+      ...result,
+      url: await getInvoicePdfUrl({ key: result.key, filename: result.filename, disposition: "inline", expiresIn: 120 }),
+    };
+  });
+}
+
+export async function downloadInvoicePdf(id: string): Promise<Result<InvoicePdfResult>> {
+  return toResultAsync(async () => {
+    const session = await requireSession();
+    requirePermission(session, "invoice:view");
+    const { result } = await ensureStoredInvoicePdf(id, AuditAction.EXPORT);
+    const db = await getTenantDb();
+    const now = new Date();
+    await db.$transaction(async (tx) => {
+      await tx.invoice.update({ where: { id }, data: { lastExportedAt: now } });
+      await tx.invoiceEvent.create({
+        data: {
+          organizationId: session.organizationId,
+          invoiceId: id,
+          actorId: session.user.id,
+          type: InvoiceEventType.PDF_DOWNLOADED,
+          message: `PDF version ${result.version} downloaded`,
+        },
+      });
+    });
+    return result;
+  });
+}
+
+export async function printInvoicePdf(id: string): Promise<Result<InvoicePdfResult>> {
+  return toResultAsync(async () => {
+    const session = await requireSession();
+    requirePermission(session, "invoice:view");
+    const { result } = await ensureStoredInvoicePdf(id, AuditAction.PRINT);
+    const db = await getTenantDb();
+    const now = new Date();
+    await db.$transaction(async (tx) => {
+      await tx.invoice.update({ where: { id }, data: { printedAt: now } });
+      await tx.invoiceEvent.create({
+        data: {
+          organizationId: session.organizationId,
+          invoiceId: id,
+          actorId: session.user.id,
+          type: InvoiceEventType.PRINTED,
+          message: `PDF version ${result.version} printed`,
+        },
+      });
+    });
+    return result;
+  });
+}
+
 export interface SendInvoiceResult {
   status: DbInvoiceStatus;
   emailDelivered: boolean;
@@ -943,9 +1166,17 @@ export interface SendInvoiceResult {
   sentAt: string;
 }
 
+export interface InvoiceComposerInput {
+  to?: string;
+  cc?: string[];
+  bcc?: string[];
+  subject?: string;
+  message?: string;
+}
+
 export async function sendInvoice(
   id: string,
-  options: { resend?: boolean } = {},
+  options: { resend?: boolean; composer?: InvoiceComposerInput } = {},
 ): Promise<Result<SendInvoiceResult>> {
   return toResultAsync(async () => {
     const session = await requireSession();
@@ -964,12 +1195,25 @@ export async function sendInvoice(
       );
     }
 
-    if (!isValidEmailAddress(existing.customer.email)) {
+    const composer = options.composer ?? {};
+    const requestedTo = composer.to?.trim() || existing.customer.email;
+    if (!isValidEmailAddress(requestedTo)) {
       throw new DomainError(
         ErrorCodes.CUSTOMER_NO_EMAIL,
-        "Add a valid email address to this customer before sending the invoice.",
+        "Add a valid recipient email address before sending the invoice.",
       );
     }
+    const toAddress = normalizeEmailAddress(requestedTo);
+    const validateCopies = (addresses: string[] | undefined, label: string): string[] => {
+      const values = (addresses ?? []).map((address) => address.trim()).filter(Boolean);
+      const invalid = values.find((address) => !isValidEmailAddress(address));
+      if (invalid) {
+        throw new DomainError(ErrorCodes.VALIDATION, `Enter a valid ${label} email address.`);
+      }
+      return values.map(normalizeEmailAddress);
+    };
+    const ccAddresses = validateCopies(composer.cc, "CC");
+    const bccAddresses = validateCopies(composer.bcc, "BCC");
 
     if (!existing.items.length || !existing.invoiceNumber) {
       throw new DomainError(
@@ -1018,8 +1262,8 @@ export async function sendInvoice(
               entityType: EntityType.INVOICE,
               entityId: id,
               invoiceId: id,
-              toAddress: existing.customer.email ?? "",
-              subject: `Invoice ${existing.invoiceNumber}`,
+              toAddress,
+              subject: composer.subject?.trim() || `Invoice ${existing.invoiceNumber}`,
               status: OutboxStatus.FAILED,
               attempts: 1,
               provider,
@@ -1064,12 +1308,11 @@ export async function sendInvoice(
       companyName: existing.organization.legalName ?? existing.organization.name,
       amount: formatMoney(existing.total, existing.currencyCode),
       dueDate: toCalendarDateInput(existing.dueDate),
+      subject: composer.subject,
+      message: composer.message,
     });
 
-    const toAddress = normalizeEmailAddress(existing.customer.email);
     const senderAddress = config.provider === "EMAIL_API" ? "email-api" : config.from;
-    const ccAddresses = config.provider === "EMAIL_API" ? [] : config.cc;
-    const bccAddresses = config.provider === "EMAIL_API" ? [] : config.bcc;
     const replyToAddress = config.provider === "EMAIL_API" ? undefined : config.replyTo;
     const message = {
       from: senderAddress,
@@ -1107,6 +1350,7 @@ export async function sendInvoice(
         where: { id },
         data: {
           status: nextStatus,
+          searchText: refreshedSearchText(existing, { status: nextStatus }),
           sentAt,
           sentById: session.user.id,
           emailDeliveryStatus: EmailDeliveryStatus.DELIVERED,
@@ -1188,7 +1432,13 @@ export async function markInvoiceViewed(id: string): Promise<Result<{ status: Db
     await db.$transaction(async (tx) => {
       await tx.invoice.update({
         where: { id },
-        data: { status: nextStatus, viewedAt: new Date(), version: { increment: 1 } },
+        data: {
+          status: nextStatus,
+          searchText: refreshedSearchText(existing, { status: nextStatus }),
+          viewedAt: new Date(),
+          viewStatus: "VIEWED",
+          version: { increment: 1 },
+        },
       });
       await tx.invoiceEvent.create({
         data: {
@@ -1229,6 +1479,7 @@ export async function cancelInvoice(id: string, reason: string): Promise<Result<
         where: { id },
         data: {
           status: nextStatus,
+          searchText: refreshedSearchText(existing, { status: nextStatus }),
           cancelledAt: new Date(),
           cancelReason: reason.trim(),
           version: { increment: 1 },
@@ -1269,7 +1520,7 @@ export async function duplicateInvoice(id: string): Promise<Result<InvoiceDetail
     await assertAccess(session, existing);
 
     const settings = await loadSettings(db, session.organizationId);
-    const invoiceNumber = await allocateNumber(db, DocumentType.INVOICE, settings.prefix, session.organizationId);
+    const invoiceNumber = await allocateNumber(db, DocumentType.INVOICE, settings.prefix, session.organizationId, 6);
     const duplicateDates = deriveInvoiceDates(
       parseCalendarDate(todayCalendarDate())!,
       existing.paymentTerms,
@@ -1281,6 +1532,14 @@ export async function duplicateInvoice(id: string): Promise<Result<InvoiceDetail
         customerId: existing.customerId,
         invoiceNumber,
         status: "DRAFT",
+        searchText: buildInvoiceSearchText({
+          invoiceNumber,
+          customerName: existing.customer.displayName,
+          status: "DRAFT",
+          total: existing.total.toString(),
+          reference: existing.reference,
+          notes: existing.notes,
+        }),
         currencyCode: existing.currencyCode,
         baseCurrencyCode: existing.baseCurrencyCode,
         exchangeRate: existing.exchangeRate,
@@ -1412,14 +1671,14 @@ export async function recordPayment(input: RecordPaymentInput): Promise<Result<{
       }[]>`
         SELECT
           id,
-          "customerId"::text AS "customerId",
-          "currencyCode"::text AS "currencyCode",
-          "baseCurrencyCode"::text AS "baseCurrencyCode",
-          "exchangeRate"::text AS "exchangeRate",
+          "customer_id"::text AS "customerId",
+          "currency_code"::text AS "currencyCode",
+          "base_currency_code"::text AS "baseCurrencyCode",
+          "exchange_rate"::text AS "exchangeRate",
           total::text AS total,
           status
         FROM "Invoice"
-        WHERE id = ${existing.id}::uuid AND "organizationId" = ${session.organizationId}::uuid
+        WHERE id = ${existing.id}::uuid AND "organization_id" = ${session.organizationId}::uuid
         FOR UPDATE
       `;
       const row = locked[0];
@@ -1472,6 +1731,7 @@ export async function recordPayment(input: RecordPaymentInput): Promise<Result<{
           amountPaid: finalAmountPaid,
           balanceDue: finalBalanceDue,
           status: nextStatus,
+          searchText: refreshedSearchText(existing, { status: nextStatus, total: row.total }),
           version: { increment: 1 },
         },
       });

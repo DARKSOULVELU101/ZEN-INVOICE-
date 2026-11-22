@@ -12,12 +12,16 @@ import {
   cancelInvoice,
   createInvoice,
   deleteInvoice,
+  downloadInvoicePdf,
   duplicateInvoice,
   listPayments,
   markInvoiceViewed,
+  previewInvoicePdf,
+  printInvoicePdf,
   recordPayment,
   sendInvoice,
   updateInvoice,
+  type InvoicePdfResult,
   type SendInvoiceResult,
 } from "../server/invoice-service";
 
@@ -30,6 +34,22 @@ function validationFailure(error: z.ZodError): Result<never> {
 }
 
 const invoiceIdSchema = z.string().uuid("Invalid invoice reference.");
+
+const composerSchema = z.object({
+  to: z.string().trim().email("Enter a valid recipient email address.").optional(),
+  cc: z.array(z.string().trim().email()).max(10).optional(),
+  bcc: z.array(z.string().trim().email()).max(10).optional(),
+  subject: z.string().trim().min(1).max(200).optional(),
+  message: z.string().trim().max(2000).optional(),
+}).strict();
+
+type ComposerInput = z.infer<typeof composerSchema>;
+
+function parsedComposer(value: unknown): ComposerInput | null {
+  if (value === undefined || value === null) return null;
+  const parsed = composerSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
+}
 
 function parsedInvoiceId(id: unknown): string | null {
   const parsed = invoiceIdSchema.safeParse(id);
@@ -95,18 +115,57 @@ export async function deleteInvoiceAction(id: string): Promise<Result<{ id: stri
   return result;
 }
 
-export async function sendInvoiceAction(id: string): Promise<Result<SendInvoiceResult>> {
+export async function sendInvoiceAction(
+  id: string,
+  composer?: unknown,
+): Promise<Result<SendInvoiceResult>> {
   const invoiceId = parsedInvoiceId(id);
   if (!invoiceId) return fail(ErrorCodes.VALIDATION, "Invalid invoice reference.");
-  const result = await sendInvoice(invoiceId);
+  const parsedComposerValue = parsedComposer(composer);
+  if (composer !== undefined && composer !== null && !parsedComposerValue) {
+    return fail(ErrorCodes.VALIDATION, "Check the email recipient, subject and message.");
+  }
+  const result = await sendInvoice(invoiceId, { composer: parsedComposerValue ?? undefined });
   if (result.ok) revalidateInvoicePaths(invoiceId);
   return result;
 }
 
-export async function resendInvoiceAction(id: string): Promise<Result<SendInvoiceResult>> {
+export async function resendInvoiceAction(
+  id: string,
+  composer?: unknown,
+): Promise<Result<SendInvoiceResult>> {
   const invoiceId = parsedInvoiceId(id);
   if (!invoiceId) return fail(ErrorCodes.VALIDATION, "Invalid invoice reference.");
-  const result = await sendInvoice(invoiceId, { resend: true });
+  const parsedComposerValue = parsedComposer(composer);
+  if (composer !== undefined && composer !== null && !parsedComposerValue) {
+    return fail(ErrorCodes.VALIDATION, "Check the email recipient, subject and message.");
+  }
+  const result = await sendInvoice(invoiceId, {
+    resend: true,
+    composer: parsedComposerValue ?? undefined,
+  });
+  if (result.ok) revalidateInvoicePaths(invoiceId);
+  return result;
+}
+
+export async function previewInvoicePdfAction(id: string): Promise<Result<InvoicePdfResult>> {
+  const invoiceId = parsedInvoiceId(id);
+  if (!invoiceId) return fail(ErrorCodes.VALIDATION, "Invalid invoice reference.");
+  return previewInvoicePdf(invoiceId);
+}
+
+export async function downloadInvoicePdfAction(id: string): Promise<Result<InvoicePdfResult>> {
+  const invoiceId = parsedInvoiceId(id);
+  if (!invoiceId) return fail(ErrorCodes.VALIDATION, "Invalid invoice reference.");
+  const result = await downloadInvoicePdf(invoiceId);
+  if (result.ok) revalidateInvoicePaths(invoiceId);
+  return result;
+}
+
+export async function printInvoicePdfAction(id: string): Promise<Result<InvoicePdfResult>> {
+  const invoiceId = parsedInvoiceId(id);
+  if (!invoiceId) return fail(ErrorCodes.VALIDATION, "Invalid invoice reference.");
+  const result = await printInvoicePdf(invoiceId);
   if (result.ok) revalidateInvoicePaths(invoiceId);
   return result;
 }
