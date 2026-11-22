@@ -1067,12 +1067,16 @@ export async function sendInvoice(
     });
 
     const toAddress = normalizeEmailAddress(existing.customer.email);
+    const senderAddress = config.provider === "EMAIL_API" ? "email-api" : config.from;
+    const ccAddresses = config.provider === "EMAIL_API" ? [] : config.cc;
+    const bccAddresses = config.provider === "EMAIL_API" ? [] : config.bcc;
+    const replyToAddress = config.provider === "EMAIL_API" ? undefined : config.replyTo;
     const message = {
-      from: config.from,
+      from: senderAddress,
       to: [toAddress],
-      cc: config.cc,
-      bcc: config.bcc,
-      ...(config.replyTo ? { replyTo: config.replyTo } : {}),
+      cc: ccAddresses,
+      bcc: bccAddresses,
+      ...(replyToAddress ? { replyTo: replyToAddress } : {}),
       subject: email.subject,
       text: email.text,
       html: email.html,
@@ -1081,6 +1085,7 @@ export async function sendInvoice(
         contentType: "application/pdf",
         content: pdf,
       }],
+      headers: { invoiceId: id },
       idempotencyKey: randomUUID(),
     };
 
@@ -1129,10 +1134,10 @@ export async function sendInvoice(
           entityId: id,
           invoiceId: id,
           toAddress,
-          fromAddress: config.from,
-          replyTo: config.replyTo,
-          ccAddresses: config.cc,
-          bccAddresses: config.bcc,
+          fromAddress: senderAddress,
+          replyTo: replyToAddress ?? null,
+          ccAddresses,
+          bccAddresses,
           subject: email.subject,
           bodyText: email.text,
           bodyHtml: email.html,

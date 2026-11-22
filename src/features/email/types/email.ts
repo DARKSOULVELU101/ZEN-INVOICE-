@@ -1,4 +1,4 @@
-export const EMAIL_PROVIDERS = ["RESEND", "SENDGRID", "SES", "SMTP"] as const;
+export const EMAIL_PROVIDERS = ["EMAIL_API", "RESEND", "SENDGRID", "SES", "SMTP"] as const;
 
 export type EmailProviderName = (typeof EMAIL_PROVIDERS)[number];
 

@@ -9,6 +9,7 @@ interface EmailConfigBase {
 }
 
 export type EmailConfig =
+  | { provider: "EMAIL_API"; apiUrl: string; apiToken: string }
   | (EmailConfigBase & { provider: "RESEND"; apiKey: string })
   | (EmailConfigBase & { provider: "SENDGRID"; apiKey: string })
   | (EmailConfigBase & { provider: "SES"; region: string })
@@ -35,10 +36,25 @@ function parseBoolean(value: string | undefined, fallback: boolean): boolean {
 export function loadEmailConfig(env: Record<string, string | undefined> = process.env): EmailConfig {
   const rawProvider = env.EMAIL_PROVIDER?.trim().toUpperCase();
   if (!rawProvider || !EMAIL_PROVIDERS.includes(rawProvider as EmailProviderName)) {
-    throw new Error("EMAIL_PROVIDER is required and must be RESEND, SENDGRID, SES or SMTP.");
+    throw new Error("EMAIL_PROVIDER is required and must be EMAIL_API, RESEND, SENDGRID, SES or SMTP.");
   }
 
   const provider = rawProvider as EmailProviderName;
+
+  if (provider === "EMAIL_API") {
+    const apiUrl = required(env, "EMAIL_API_URL");
+    try {
+      new URL(apiUrl);
+    } catch {
+      throw new Error("EMAIL_API_URL must be a valid URL.");
+    }
+    return {
+      provider,
+      apiUrl: apiUrl.replace(/\/+$/, ""),
+      apiToken: required(env, "EMAIL_API_TOKEN"),
+    };
+  }
+
   const from = required(env, "EMAIL_FROM");
   if (!isValidEmailAddress(from)) throw new Error("EMAIL_FROM must be a valid email address.");
 

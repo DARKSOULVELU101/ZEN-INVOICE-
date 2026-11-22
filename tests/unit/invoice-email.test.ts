@@ -16,6 +16,14 @@ describe("invoice delivery primitives", () => {
     expect(() => loadEmailConfig({ EMAIL_PROVIDER: "RESEND" })).toThrow(/EMAIL_FROM/);
     expect(() => loadEmailConfig({ EMAIL_PROVIDER: "RESEND", EMAIL_FROM: "billing@example.com" }))
       .toThrow(/RESEND_API_KEY/);
+    expect(() => loadEmailConfig({ EMAIL_PROVIDER: "EMAIL_API" })).toThrow(/EMAIL_API_URL/);
+    expect(() => loadEmailConfig({ EMAIL_PROVIDER: "EMAIL_API", EMAIL_API_URL: "not-a-url" }))
+      .toThrow(/valid URL/);
+    expect(loadEmailConfig({
+      EMAIL_PROVIDER: "EMAIL_API",
+      EMAIL_API_URL: "https://email.example.com",
+      EMAIL_API_TOKEN: "test-token",
+    })).toMatchObject({ provider: "EMAIL_API" });
   });
 
   it("builds a Zoho-style invoice email", () => {
