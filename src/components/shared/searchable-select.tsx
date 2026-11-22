@@ -22,6 +22,7 @@ export function SearchableSelect({
   disabled,
   onCreate,
   invalid,
+  id,
 }: {
   value?: string | null;
   options: SearchableOption[];
@@ -32,6 +33,7 @@ export function SearchableSelect({
   disabled?: boolean;
   onCreate?: () => void;
   invalid?: boolean;
+  id?: string;
 }) {
   const [open, setOpen] = React.useState(false);
   const [query, setQuery] = React.useState("");
@@ -68,11 +70,12 @@ export function SearchableSelect({
         <Button
           type="button"
           variant="outline"
+          id={id}
           role="combobox"
           aria-label={ariaLabel}
           aria-invalid={invalid}
           disabled={disabled}
-          className="w-full justify-between font-normal"
+          className="h-10 w-full justify-between rounded-control font-normal"
         >
           <span className="truncate">{selected?.label ?? placeholder}</span>
           <ChevronsUpDown className="ml-2 size-4 shrink-0 opacity-50" aria-hidden="true" />

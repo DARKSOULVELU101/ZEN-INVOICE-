@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { invoiceFormSchema } from "@/features/invoices/schemas/invoice";
+import { invoiceFormSchema, invoicePayloadSchema } from "@/features/invoices/schemas/invoice";
 import { permissionsForRoles } from "@/config/permissions";
 import { decodeCursor, encodeCursor } from "@/lib/query/cursor";
 
@@ -9,8 +9,8 @@ const valid = {
   gstin: "27AAPFU0939F1ZV",
   sourceStateCode: "mh",
   destinationStateCode: "MH",
-  issueDate: "2026-01-01",
-  dueDate: "2026-01-31",
+  invoiceDate: "2026-01-01",
+  paymentTerms: 30,
   lines: [
     {
       productId: "22222222-2222-4222-8222-222222222222",
@@ -25,11 +25,13 @@ const valid = {
 };
 
 describe("invoice form validation", () => {
-  it("accepts a valid invoice and normalizes GST fields", () => {
-    const parsed = invoiceFormSchema.parse(valid);
+  it("accepts a valid invoice, derives dates, and normalizes GST fields", () => {
+    const parsed = invoicePayloadSchema.parse(valid);
     expect(parsed.currencyCode).toBe("USD");
     expect(parsed.gstin).toBe("27AAPFU0939F1ZV");
     expect(parsed.sourceStateCode).toBe("MH");
+    expect(parsed.issueDate.toISOString()).toBe("2026-01-01T00:00:00.000Z");
+    expect(parsed.dueDate.toISOString()).toBe("2026-01-31T00:00:00.000Z");
     expect(parsed.lines[0]?.description).toBe("Consulting");
   });
 
@@ -38,9 +40,18 @@ describe("invoice form validation", () => {
     expect(invoiceFormSchema.safeParse({ ...valid, gstin: "BAD-GSTIN" }).success).toBe(false);
   });
 
-  it("rejects a due date before the issue date", () => {
-    const result = invoiceFormSchema.safeParse({ ...valid, dueDate: "2025-12-31" });
-    expect(result.success).toBe(false);
+  it("requires a valid invoice date and payment terms", () => {
+    expect(invoiceFormSchema.safeParse({ ...valid, invoiceDate: "2026-02-30" }).success).toBe(false);
+    expect(invoiceFormSchema.safeParse({ ...valid, invoiceDate: undefined }).success).toBe(false);
+    expect(invoiceFormSchema.safeParse({ ...valid, paymentTerms: -1 }).success).toBe(false);
+  });
+
+  it("does not accept client-supplied issueDate or dueDate overrides", () => {
+    expect(invoiceFormSchema.safeParse({
+      ...valid,
+      issueDate: "2020-01-01",
+      dueDate: "2020-01-02",
+    }).success).toBe(false);
   });
 
   it("requires a product for every line and rejects duplicate taxes", () => {
@@ -76,8 +87,15 @@ describe("shared kernel", () => {
   });
 
   it("round-trips keyset cursors", () => {
-    const encoded = encodeCursor({ createdAt: "2026-01-01T00:00:00.000Z", id: "abc" });
-    expect(decodeCursor(encoded)).toEqual({ createdAt: "2026-01-01T00:00:00.000Z", id: "abc" });
+    const cursor = {
+      sort: "createdAt",
+      dir: "desc" as const,
+      kind: "date" as const,
+      value: "2026-01-01T00:00:00.000Z",
+      id: "abc",
+    };
+    const encoded = encodeCursor(cursor);
+    expect(decodeCursor(encoded)).toEqual(cursor);
     expect(decodeCursor("not-base64")).toBeNull();
   });
 });

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { parseCalendarDate } from "../domain/dates";
 
 export const recordPaymentSchema = z.object({
   invoiceId: z.string().uuid(),
@@ -11,7 +12,8 @@ export const recordPaymentSchema = z.object({
   paidAt: z
     .string()
     .regex(/^\d{4}-\d{2}-\d{2}$/)
-    .transform((value) => new Date(`${value}T00:00:00.000Z`)),
+    .refine((value) => parseCalendarDate(value) !== null, { message: "Enter a valid date" })
+    .transform((value) => parseCalendarDate(value)!),
   method: z.enum(["CASH", "BANK_TRANSFER", "CREDIT_CARD", "DEBIT_CARD", "CHECK", "ONLINE", "OTHER"]),
   reference: z.string().trim().max(100).optional().nullable(),
 });

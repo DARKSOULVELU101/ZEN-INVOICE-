@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { APP } from "@/config/app";
+import { deriveInvoiceDates, parseCalendarDate, toCalendarDateInput } from "../domain/dates";
 import { INVOICE_STATUSES } from "../domain/status";
 
 export const SUPPORTED_CURRENCIES = ["INR", "USD", "EUR", "GBP", "AED"] as const;
@@ -18,10 +19,11 @@ const gstinSchema = z
   .regex(/^[0-9A-Z]{15}$/, "GSTIN must be 15 alphanumeric characters")
   .transform((value) => value.toUpperCase());
 
-const isoDate = z
+const calendarDateSchema = z
   .string()
-  .regex(/^\d{4}-\d{2}-\d{2}$/, "Use the format YYYY-MM-DD")
-  .transform((value) => new Date(`${value}T00:00:00.000Z`));
+  .refine((value) => parseCalendarDate(value) !== null, "Enter a valid date in YYYY-MM-DD format");
+
+const filterDateSchema = calendarDateSchema.transform((value) => parseCalendarDate(value)!);
 
 export const decimalValue = z
   .union([z.string(), z.number()])
@@ -62,8 +64,8 @@ export const invoiceFormSchema = z
     shippingAmount: decimalValue.optional().default("0"),
     roundOffAmount: decimalValue.optional().default("0"),
     version: z.number().int().min(1).optional(),
-    issueDate: isoDate,
-    dueDate: isoDate,
+    invoiceDate: calendarDateSchema,
+    paymentTerms: z.number().int().min(0).max(365),
     reference: z.string().trim().max(100).optional().nullable(),
     notes: z.string().trim().max(APP.maxStringLength).optional().nullable(),
     terms: z.string().trim().max(APP.maxStringLength).optional().nullable(),
@@ -71,16 +73,22 @@ export const invoiceFormSchema = z
     changeReason: z.string().trim().max(500).optional().nullable(),
     lines: z.array(invoiceLineSchema).min(1, "Add at least one line item").max(APP.maxLineItems),
   })
-  .strict()
-  .refine((value) => value.dueDate.getTime() >= value.issueDate.getTime(), {
-    message: "Due date cannot be before the issue date",
-    path: ["dueDate"],
-  });
+  .strict();
+
+export const invoicePayloadSchema = invoiceFormSchema.transform((value) => {
+  const dates = deriveInvoiceDates(parseCalendarDate(value.invoiceDate)!, value.paymentTerms);
+  return {
+    ...value,
+    invoiceDate: dates.invoiceDate,
+    issueDate: dates.issueDate,
+    dueDate: dates.dueDate,
+  };
+});
 
 export type InvoiceFormValues = z.input<typeof invoiceFormSchema>;
-export type InvoiceFormOutput = z.output<typeof invoiceFormSchema>;
+export type InvoiceFormOutput = z.output<typeof invoicePayloadSchema>;
 
-export const invoiceSortFields = ["createdAt", "dueDate", "invoiceNumber", "total", "status"] as const;
+export const invoiceSortFields = ["createdAt", "dueDate", "invoiceDate", "invoiceNumber", "total", "status"] as const;
 
 export const invoiceListQuerySchema = z.object({
   q: z.string().trim().max(200).optional(),
@@ -90,8 +98,8 @@ export const invoiceListQuerySchema = z.object({
     .optional()
     .transform((value) => (value === undefined ? undefined : value === "true")),
   customerId: z.string().uuid().optional(),
-  from: isoDate.optional(),
-  to: isoDate.optional(),
+  from: filterDateSchema.optional(),
+  to: filterDateSchema.optional(),
   sort: z.enum(invoiceSortFields).default("createdAt"),
   dir: z.enum(["asc", "desc"]).default("desc"),
   cursor: z.string().optional(),
@@ -116,8 +124,8 @@ export function queryToSearchParams(query: InvoiceListQuery): URLSearchParams {
   if (query.status) params.set("status", query.status);
   if (query.overdue !== undefined) params.set("overdue", String(query.overdue));
   if (query.customerId) params.set("customerId", query.customerId);
-  if (query.from) params.set("from", query.from.toISOString().slice(0, 10));
-  if (query.to) params.set("to", query.to.toISOString().slice(0, 10));
+  if (query.from) params.set("from", toCalendarDateInput(query.from));
+  if (query.to) params.set("to", toCalendarDateInput(query.to));
   if (query.sort !== "createdAt") params.set("sort", query.sort);
   if (query.dir !== "desc") params.set("dir", query.dir);
   if (query.limit !== APP.defaultPageSize) params.set("limit", String(query.limit));

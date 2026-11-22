@@ -1,7 +1,7 @@
 export const APP = {
   name: "Zenbook ERP",
-  defaultLocale: "en-US",
-  defaultTimezone: "UTC",
+  defaultLocale: "en-IN",
+  defaultTimezone: "Asia/Kolkata",
   defaultCurrency: "INR",
   defaultInvoiceDueDays: 30,
   defaultInvoicePrefix: "INV",

@@ -2,6 +2,7 @@ import { requireSession } from "@/lib/auth/session";
 import { getTenantDb } from "@/lib/db/tenant";
 import { toResultAsync, type Result } from "@/lib/errors/result";
 import { APP } from "@/config/app";
+import { todayCalendarDate } from "../domain/dates";
 import type { CustomerOption } from "@/features/partners/types/customer";
 import type { ProductOption } from "@/features/catalog/types/product";
 
@@ -32,6 +33,31 @@ export interface InvoiceFormOptions {
   exchangeRates: ExchangeRateOption[];
   organizationStateCode: string | null;
   organizationGstin: string | null;
+  paymentTermsDays: number;
+  today: string;
+}
+
+export async function listCustomerFilterOptions(): Promise<Result<CustomerOption[]>> {
+  return toResultAsync(async () => {
+    const db = await getTenantDb();
+    const customers = await db.customer.findMany({
+      where: { status: "ACTIVE", deletedAt: null },
+      select: {
+        id: true, displayName: true, email: true,
+        currencyCode: true, stateCode: true, gstin: true,
+      },
+      orderBy: { displayName: "asc" },
+      take: 1000,
+    });
+    return customers.map((customer) => ({
+      id: customer.id,
+      label: customer.displayName,
+      email: customer.email,
+      currencyCode: customer.currencyCode,
+      stateCode: customer.stateCode,
+      gstin: customer.gstin,
+    }));
+  });
 }
 
 export async function getInvoiceFormOptions(): Promise<Result<InvoiceFormOptions>> {
@@ -44,6 +70,7 @@ export async function getInvoiceFormOptions(): Promise<Result<InvoiceFormOptions
         where: { status: "ACTIVE", deletedAt: null },
         select: {
           id: true, displayName: true, email: true, currencyCode: true, stateCode: true, gstin: true,
+          paymentTermsDays: true,
         },
         orderBy: { displayName: "asc" },
         take: 1000,
@@ -99,6 +126,7 @@ export async function getInvoiceFormOptions(): Promise<Result<InvoiceFormOptions
         currencyCode: customer.currencyCode,
         stateCode: customer.stateCode,
         gstin: customer.gstin,
+        paymentTermsDays: customer.paymentTermsDays,
       })),
       products: products.map((product) => ({
         id: product.id,
@@ -126,6 +154,8 @@ export async function getInvoiceFormOptions(): Promise<Result<InvoiceFormOptions
       exchangeRates: [...latestRates.values()],
       organizationStateCode: organization?.stateCode ?? null,
       organizationGstin: organization?.gstin ?? null,
+      paymentTermsDays: settings?.invoiceDueDays ?? APP.defaultInvoiceDueDays,
+      today: todayCalendarDate(),
     };
   });
 }

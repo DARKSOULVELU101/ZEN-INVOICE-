@@ -14,6 +14,7 @@ export function ConfirmDialog({
   confirmLabel = "Confirm",
   onConfirm,
   pending,
+  intent = "destructive",
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -22,6 +23,7 @@ export function ConfirmDialog({
   confirmLabel?: string;
   onConfirm: () => void;
   pending?: boolean;
+  intent?: "destructive" | "primary";
 }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -34,7 +36,7 @@ export function ConfirmDialog({
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={pending}>
             Cancel
           </Button>
-          <Button variant="destructive" onClick={onConfirm} disabled={pending}>
+          <Button variant={intent === "primary" ? "default" : "destructive"} onClick={onConfirm} disabled={pending}>
             {pending ? "Working…" : confirmLabel}
           </Button>
         </DialogFooter>

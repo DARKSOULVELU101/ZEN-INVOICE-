@@ -1,10 +1,9 @@
 "use client";
 
 import * as React from "react";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { Copy, Send, Trash2, XCircle, Wallet } from "lucide-react";
+import { Copy, Pencil, Send, Wallet } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -14,10 +13,13 @@ import {
   Dialog, DialogContent, DialogDescription, DialogFooter,
   DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
+import { ActionMenu, type MenuAction } from "@/components/shared/action-menu";
 import { ConfirmDialog } from "@/components/shared/confirm-dialog";
 import { FormField } from "@/components/shared/form-field";
+import { MoneyInput } from "@/components/shared/money-input";
 import { ROUTES } from "@/config/app";
 import { formatMoney } from "@/lib/format/format";
+import { todayCalendarDate } from "../../domain/dates";
 import type { InvoiceDetail } from "../../types/invoice";
 import {
   cancelInvoiceAction, deleteInvoiceAction, duplicateInvoiceAction,
@@ -32,7 +34,7 @@ export function InvoiceActions({ invoice }: { invoice: InvoiceDetail }) {
   const [pending, setPending] = React.useState(false);
   const [reason, setReason] = React.useState("");
   const [amount, setAmount] = React.useState(invoice.balanceDue);
-  const [paidAt, setPaidAt] = React.useState(new Date().toISOString().slice(0, 10));
+  const [paidAt, setPaidAt] = React.useState(todayCalendarDate());
   const [method, setMethod] = React.useState("BANK_TRANSFER");
   const [reference, setReference] = React.useState("");
 
@@ -60,37 +62,44 @@ export function InvoiceActions({ invoice }: { invoice: InvoiceDetail }) {
     }
   };
 
+  const primary = canPay
+    ? { label: "Record payment", icon: Wallet, onSelect: () => setDialog("payment") }
+    : canSend
+      ? { label: "Send invoice", icon: Send, onSelect: () => setDialog("send") }
+      : canEdit
+        ? { label: "Edit invoice", icon: Pencil, onSelect: () => router.push(ROUTES.invoiceEdit(invoice.id)) }
+        : { label: "Duplicate", icon: Copy, onSelect: () => void run(() => duplicateInvoiceAction(invoice.id)) };
+
+  const PrimaryIcon = primary.icon;
+
+  const actions: MenuAction[] = [];
+  if (canEdit && primary.label !== "Edit invoice") {
+    actions.push({ label: "Edit", onSelect: () => router.push(ROUTES.invoiceEdit(invoice.id)) });
+  }
+  if (canSend && primary.label !== "Send invoice") {
+    actions.push({ label: "Send", onSelect: () => setDialog("send") });
+  }
+  if (canPay && primary.label !== "Record payment") {
+    actions.push({ label: "Record payment", onSelect: () => setDialog("payment") });
+  }
+  if (primary.label !== "Duplicate") {
+    actions.push({ label: "Duplicate", onSelect: () => void run(() => duplicateInvoiceAction(invoice.id)) });
+  }
+  if (canCancel) {
+    actions.push({ label: "Cancel invoice", onSelect: () => setDialog("cancel"), destructive: true });
+  }
+  if (canDelete) {
+    actions.push({ label: "Delete draft", onSelect: () => setDialog("delete"), destructive: true });
+  }
+
   return (
     <>
-      <div className="flex flex-wrap items-center gap-2">
-        {canEdit ? (
-          <Button asChild variant="outline" size="sm">
-            <Link href={ROUTES.invoiceEdit(invoice.id)}>Edit</Link>
-          </Button>
-        ) : null}
-        {canSend ? (
-          <Button size="sm" onClick={() => setDialog("send")}>
-            <Send aria-hidden="true" /> Send
-          </Button>
-        ) : null}
-        {canPay ? (
-          <Button size="sm" onClick={() => setDialog("payment")}>
-            <Wallet aria-hidden="true" /> Record payment
-          </Button>
-        ) : null}
-        <Button variant="outline" size="sm" onClick={() => void run(() => duplicateInvoiceAction(invoice.id))}>
-          <Copy aria-hidden="true" /> Duplicate
+      <div className="flex flex-wrap items-center justify-end gap-2">
+        <Button onClick={primary.onSelect} disabled={pending}>
+          <PrimaryIcon aria-hidden="true" />
+          {primary.label}
         </Button>
-        {canCancel ? (
-          <Button variant="outline" size="sm" onClick={() => setDialog("cancel")}>
-            <XCircle aria-hidden="true" /> Cancel
-          </Button>
-        ) : null}
-        {canDelete ? (
-          <Button variant="ghost" size="sm" onClick={() => setDialog("delete")}>
-            <Trash2 className="text-destructive" aria-hidden="true" /> Delete
-          </Button>
-        ) : null}
+        <ActionMenu label={`More actions for ${invoice.invoiceNumber}`} actions={actions} />
       </div>
 
       <ConfirmDialog
@@ -99,6 +108,7 @@ export function InvoiceActions({ invoice }: { invoice: InvoiceDetail }) {
         title={`Send ${invoice.invoiceNumber}?`}
         description={`An email will be queued for ${invoice.customerEmail ?? "the customer"}. The invoice status will change to Sent.`}
         confirmLabel="Send invoice"
+        intent="primary"
         pending={pending}
         onConfirm={() => void run(() => sendInvoiceAction(invoice.id))}
       />
@@ -150,11 +160,11 @@ export function InvoiceActions({ invoice }: { invoice: InvoiceDetail }) {
           </DialogHeader>
           <div className="space-y-4">
             <FormField label="Amount" htmlFor="payment-amount" required>
-              <Input
+              <MoneyInput
                 id="payment-amount"
-                inputMode="decimal"
                 value={amount}
-                onChange={(event) => setAmount(event.target.value)}
+                currency={invoice.currencyCode}
+                onChange={setAmount}
               />
             </FormField>
             <div className="grid grid-cols-2 gap-4">

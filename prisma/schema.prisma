@@ -540,7 +540,9 @@ model Invoice {
   destinationStateCode String?              @db.VarChar(2)
   placeOfSupplyCode    String?              @db.VarChar(2)
   isReverseCharge      Boolean              @default(false)
+  invoiceDate          DateTime             @db.Date
   issueDate            DateTime             @db.Date
+  paymentTerms         Int                  @default(30)
   dueDate              DateTime             @db.Date
   reference            String?
   notes                String?
@@ -585,9 +587,11 @@ model Invoice {
   @@index([organizationId, customerId, createdAt(sort: Desc)])
   @@index([organizationId, status, balanceDue, dueDate])
   @@index([organizationId, issueDate(sort: Desc), id(sort: Desc)])
+  @@index([organizationId, invoiceDate(sort: Desc), id(sort: Desc)])
   @@index([organizationId, invoiceNumber])
   @@index([organizationId, total(sort: Desc)])
   @@index([organizationId, deletedAt, issueDate(sort: Desc)])
+  @@index([organizationId, deletedAt, invoiceDate(sort: Desc)])
 }
 
 model InvoiceItem {

@@ -4,13 +4,14 @@ import { getTenantDb } from "@/lib/db/tenant";
 import { toResultAsync, type Result } from "@/lib/errors/result";
 import { Decimal, roundMoney } from "@/lib/money/decimal";
 import { requirePermission } from "@/lib/rbac/guard";
+import { toCalendarDateInput } from "@/features/invoices/domain/dates";
 import type { ReportQuery } from "../schemas/report";
 import type { ReportColumn, ReportResult } from "../types/report";
 
 type InvoiceRow = {
   id: string;
   invoiceNumber: string;
-  issueDate: Date;
+  invoiceDate: Date;
   dueDate: Date;
   status: string;
   customerId: string;
@@ -34,7 +35,7 @@ function money(value: Prisma.Decimal, rate: Prisma.Decimal): Decimal {
 }
 
 function monthKey(date: Date): string {
-  return date.toISOString().slice(0, 7);
+  return toCalendarDateInput(date).slice(0, 7);
 }
 
 function columnsFor(reportType: ReportType): ReportColumn[] {
@@ -144,7 +145,7 @@ export async function getReport(query: ReportQuery): Promise<Result<ReportResult
 
     const where: Prisma.InvoiceWhereInput = { deletedAt: null };
     if (query.from || query.to) {
-      where.issueDate = {
+      where.invoiceDate = {
         ...(query.from ? { gte: query.from } : {}),
         ...(query.to ? { lte: query.to } : {}),
       };
@@ -162,7 +163,7 @@ export async function getReport(query: ReportQuery): Promise<Result<ReportResult
       select: {
         id: true,
         invoiceNumber: true,
-        issueDate: true,
+        invoiceDate: true,
         dueDate: true,
         status: true,
         customerId: true,
@@ -179,7 +180,7 @@ export async function getReport(query: ReportQuery): Promise<Result<ReportResult
         currencyCode: true,
         placeOfSupplyCode: true,
       },
-      orderBy: { issueDate: "desc" },
+      orderBy: { invoiceDate: "desc" },
       take: 10000,
     }) as InvoiceRow[];
 
@@ -198,7 +199,7 @@ export async function getReport(query: ReportQuery): Promise<Result<ReportResult
         rows: rows.map((row) => ({
           invoice: row.invoiceNumber,
           customer: row.customer.displayName,
-          dueDate: row.dueDate.toISOString().slice(0, 10),
+          dueDate: toCalendarDateInput(row.dueDate),
           total: money(row.total, row.exchangeRate).toString(),
           paid: money(row.amountPaid, row.exchangeRate).toString(),
           balance: money(row.balanceDue, row.exchangeRate).toString(),
@@ -214,7 +215,7 @@ export async function getReport(query: ReportQuery): Promise<Result<ReportResult
         ? row.customer.displayName
         : query.type === "GST"
           ? (row.placeOfSupplyCode ?? "UNKNOWN")
-          : monthKey(row.issueDate);
+          : monthKey(row.invoiceDate);
       grouped.set(key, addTotals(grouped.get(key) ?? emptyTotals(), row));
     }
 
@@ -228,7 +229,7 @@ export async function getReport(query: ReportQuery): Promise<Result<ReportResult
         description: "Issued invoice values by month, converted using each invoice’s snapshotted exchange rate.",
         rows: entries.map(([period, totals]) => ({
           period,
-          invoices: rows.filter((row) => monthKey(row.issueDate) === period).length,
+          invoices: rows.filter((row) => monthKey(row.invoiceDate) === period).length,
           sales: roundMoney(totals.billed).toString(),
           tax: roundMoney(totals.tax).toString(),
           billed: roundMoney(totals.billed).toString(),

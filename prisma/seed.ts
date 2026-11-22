@@ -15,6 +15,25 @@ const INVOICE_SENT = "40000000-0000-4000-8000-000000000002";
 const INVOICE_PARTIAL = "40000000-0000-4000-8000-000000000003";
 const INVOICE_PAID = "40000000-0000-4000-8000-000000000004";
 
+function calendarDateInKolkata(): string {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Kolkata", year: "numeric", month: "2-digit", day: "2-digit",
+  }).formatToParts(new Date());
+  const part = (type: string) => parts.find((item) => item.type === type)?.value ?? "";
+  return `${part("year")}-${part("month")}-${part("day")}`;
+}
+
+function calendarDateToUtcDate(value: string): Date {
+  const [year, month, day] = value.split("-").map(Number);
+  return new Date(Date.UTC(year, month - 1, day));
+}
+
+function addCalendarDays(value: string, days: number): Date {
+  const date = calendarDateToUtcDate(value);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date;
+}
+
 async function main() {
   await prisma.organization.upsert({
     where: { id: ORGANIZATION_ID },
@@ -175,32 +194,38 @@ async function main() {
     });
   }
 
-  const now = new Date();
-  const due = new Date(now.getTime() + 30 * 86_400_000);
-  const pastDue = new Date(now.getTime() - 10 * 86_400_000);
+  const today = calendarDateInKolkata();
+  const now = calendarDateToUtcDate(today);
+  const due = addCalendarDays(today, 30);
+  const pastIssue = addCalendarDays(today, -40);
+  const pastDue = addCalendarDays(today, -10);
 
   const invoices = [
     {
       id: INVOICE_DRAFT, number: "INV-26-00001", customerId: CUSTOMER_A, customerStateCode: "MH",
-      status: "DRAFT" as const, total: 1770, balanceDue: 1770, dueDate: due,
+      status: "DRAFT" as const, total: 1770, balanceDue: 1770,
+      invoiceDate: now, issueDate: now, paymentTerms: 30, dueDate: due,
       description: "Consulting services", quantity: 10, unitPrice: 150, taxId: TAX_GST, taxAmount: 270,
       cgstAmount: 135, sgstAmount: 135, igstAmount: 0,
     },
     {
       id: INVOICE_SENT, number: "INV-26-00002", customerId: CUSTOMER_B, customerStateCode: "KA",
-      status: "SENT" as const, total: 1062, balanceDue: 1062, dueDate: pastDue,
+      status: "SENT" as const, total: 1062, balanceDue: 1062,
+      invoiceDate: pastIssue, issueDate: pastIssue, paymentTerms: 30, dueDate: pastDue,
       description: "Design workshop", quantity: 1, unitPrice: 900, taxId: TAX_GST, taxAmount: 162,
       cgstAmount: 0, sgstAmount: 0, igstAmount: 162,
     },
     {
       id: INVOICE_PARTIAL, number: "INV-26-00003", customerId: CUSTOMER_A, customerStateCode: "MH",
-      status: "PARTIALLY_PAID" as const, total: 2360, balanceDue: 1360, dueDate: due,
+      status: "PARTIALLY_PAID" as const, total: 2360, balanceDue: 1360,
+      invoiceDate: now, issueDate: now, paymentTerms: 30, dueDate: due,
       description: "Consulting services", quantity: 20, unitPrice: 100, taxId: TAX_GST, taxAmount: 360,
       cgstAmount: 180, sgstAmount: 180, igstAmount: 0,
     },
     {
       id: INVOICE_PAID, number: "INV-26-00004", customerId: CUSTOMER_B, customerStateCode: "KA",
-      status: "PAID" as const, total: 1180, balanceDue: 0, dueDate: due,
+      status: "PAID" as const, total: 1180, balanceDue: 0,
+      invoiceDate: now, issueDate: now, paymentTerms: 30, dueDate: due,
       description: "Design workshop", quantity: 1, unitPrice: 1000, taxId: TAX_GST, taxAmount: 180,
       cgstAmount: 0, sgstAmount: 0, igstAmount: 180,
     },
@@ -211,6 +236,15 @@ async function main() {
       where: { organizationId: ORGANIZATION_ID, invoiceNumber: invoice.number },
     });
     if (existing) {
+      await prisma.invoice.update({
+        where: { id: existing.id },
+        data: {
+          invoiceDate: invoice.invoiceDate,
+          issueDate: invoice.issueDate,
+          paymentTerms: invoice.paymentTerms,
+          dueDate: invoice.dueDate,
+        },
+      });
       await prisma.invoiceItem.updateMany({
         where: { invoiceId: existing.id, productId: null },
         data: { productId: invoice.customerId === CUSTOMER_A ? PRODUCT_A : PRODUCT_B },
@@ -231,7 +265,9 @@ async function main() {
         gstin: "27AABCZ1234M1Z5",
         sourceStateCode: "MH",
         destinationStateCode: invoice.customerStateCode,
-        issueDate: now,
+        invoiceDate: invoice.invoiceDate,
+        issueDate: invoice.issueDate,
+        paymentTerms: invoice.paymentTerms,
         dueDate: invoice.dueDate,
         subtotal: invoice.total - invoice.taxAmount,
         discountAmount: 0,

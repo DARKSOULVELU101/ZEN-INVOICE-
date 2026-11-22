@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useFieldArray, useForm, type Resolver } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -17,13 +18,19 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import {
   Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ErrorSummary, FormField } from "@/components/shared/form-field";
+import { PageShell, BreadcrumbTrail } from "@/components/shared/page-shell";
+import {
+  ComputedField, SectionCard, SummaryPanel, SummaryRow,
+} from "@/components/shared/section-card";
 import { MoneyInput } from "@/components/shared/money-input";
 import { SearchableSelect, type SearchableOption } from "@/components/shared/searchable-select";
 import { formatMoney } from "@/lib/format/format";
 import { Decimal, roundMoney } from "@/lib/money/decimal";
-import { ROUTES, APP } from "@/config/app";
+import { ROUTES } from "@/config/app";
+import {
+  deriveInvoiceDates, parseCalendarDate, toCalendarDateInput,
+} from "../../domain/dates";
 import { calculateInvoiceTotals, calculateRoundOff } from "../../domain/totals";
 import {
   invoiceFormSchema, SUPPORTED_CURRENCIES,
@@ -42,13 +49,7 @@ import { createProductAction, searchProductsAction } from "@/features/catalog/ac
 type Currency = (typeof SUPPORTED_CURRENCIES)[number];
 type Intent = "save" | "send";
 
-function toIsoDate(date: Date): string {
-  return date.toISOString().slice(0, 10);
-}
-
 export function defaultInvoiceValues(options: InvoiceFormOptions): InvoiceFormValues {
-  const today = new Date();
-  const due = new Date(today.getTime() + APP.defaultInvoiceDueDays * 86_400_000);
   return {
     customerId: "",
     currencyCode: options.currencyCode as Currency,
@@ -58,8 +59,8 @@ export function defaultInvoiceValues(options: InvoiceFormOptions): InvoiceFormVa
     isReverseCharge: false,
     shippingAmount: "0",
     roundOffAmount: "0",
-    issueDate: toIsoDate(today),
-    dueDate: toIsoDate(due),
+    invoiceDate: options.today,
+    paymentTerms: options.paymentTermsDays,
     reference: "",
     notes: "",
     terms: "",
@@ -82,6 +83,7 @@ function lineValuesFromDetail(detail: InvoiceDetail): InvoiceFormValues["lines"]
   if (detail.items.length === 0) return defaultInvoiceValues({
     customers: [], products: [], taxes: [], currencyCode: detail.currencyCode,
     exchangeRates: [], organizationStateCode: null, organizationGstin: null,
+    paymentTermsDays: detail.paymentTerms, today: detail.invoiceDate,
   }).lines;
   return detail.items.map((item) => ({
     productId: item.productId ?? "",
@@ -126,6 +128,7 @@ export function InvoiceForm({
     name: "", sku: "", salePrice: "0", hsnSac: "", currencyCode: "INR" as Currency,
   });
   const [draftId, setDraftId] = React.useState<string | null>(null);
+  const draftVersionRef = React.useRef<number | null>(null);
   const [savedAt, setSavedAt] = React.useState<Date | null>(null);
   const [autoRoundOff, setAutoRoundOff] = React.useState(false);
   const lastSavedRef = React.useRef<string>("");
@@ -143,8 +146,8 @@ export function InvoiceForm({
             shippingAmount: detail.shippingAmount,
             roundOffAmount: detail.roundOffAmount,
             version: detail.version,
-            issueDate: detail.issueDate,
-            dueDate: detail.dueDate,
+            invoiceDate: detail.invoiceDate,
+            paymentTerms: detail.paymentTerms,
             reference: detail.reference ?? "",
             notes: detail.notes ?? "",
             terms: detail.terms ?? "",
@@ -165,6 +168,11 @@ export function InvoiceForm({
 
   const watched = watch();
   const currency = watched.currencyCode ?? options.currencyCode;
+  const derivedDates = React.useMemo(() => {
+    const invoiceDate = parseCalendarDate(watched.invoiceDate);
+    if (!invoiceDate) return null;
+    return deriveInvoiceDates(invoiceDate, watched.paymentTerms ?? options.paymentTermsDays);
+  }, [options.paymentTermsDays, watched.invoiceDate, watched.paymentTerms]);
 
   const convertPrice = React.useCallback(
     (amount: string, from: string, to: string): string => {
@@ -246,6 +254,10 @@ export function InvoiceForm({
     }
   }, [autoRoundOff, buildTotals]);
 
+  const effectiveRoundOff = autoRoundOff
+    ? totals?.roundOffAmount.toString() ?? "0"
+    : watched.roundOffAmount ?? "0";
+
   const searchCustomerOptions = React.useCallback(
     async (query: string): Promise<SearchableOption[]> => {
       const result = await searchCustomersAction({ q: query, limit: 20 });
@@ -277,9 +289,12 @@ export function InvoiceForm({
   const submit = async (values: InvoiceFormValues, selectedIntent: Intent) => {
     setIntentError(null);
     setSubmitting(selectedIntent);
+    const payload: InvoiceFormValues = { ...values, roundOffAmount: effectiveRoundOff };
     const result = mode === "create"
-      ? await createInvoiceAction(values)
-      : await updateInvoiceAction(detail!.id, values, detail!.version);
+      ? draftId && draftVersionRef.current
+        ? await updateInvoiceAction(draftId, payload, draftVersionRef.current)
+        : await createInvoiceAction(payload)
+      : await updateInvoiceAction(detail!.id, payload, detail!.version);
 
     if (!result.ok) {
       for (const [field, messages] of Object.entries(result.error.fieldErrors ?? {})) {
@@ -310,21 +325,28 @@ export function InvoiceForm({
 
   React.useEffect(() => {
     if (mode !== "create" || submitting) return;
-    const signature = JSON.stringify(watched);
+    const snapshot = { ...watched, roundOffAmount: effectiveRoundOff, version: undefined };
+    const signature = JSON.stringify(snapshot);
     if (!formState.isDirty || signature === lastSavedRef.current) return;
     if (!watched.customerId || (watched.lines ?? []).some((line) => !line.productId)) return;
 
     const timer = setTimeout(async () => {
-      const result = await saveDraftAction(getValues(), draftId ?? undefined);
+      const values = getValues();
+      const result = await saveDraftAction(
+        { ...values, roundOffAmount: effectiveRoundOff },
+        draftId ?? undefined,
+      );
       if (result.ok) {
         lastSavedRef.current = signature;
         setDraftId(result.data.id);
+        draftVersionRef.current = result.data.version;
+        setValue("version", result.data.version);
         setSavedAt(new Date());
       }
     }, 2000);
 
     return () => clearTimeout(timer);
-  }, [draftId, formState.isDirty, getValues, mode, submitting, watched]);
+  }, [draftId, effectiveRoundOff, formState.isDirty, getValues, mode, setValue, submitting, watched]);
 
   const submitNewCustomer = async () => {
     const result = await createCustomerAction({
@@ -386,95 +408,150 @@ export function InvoiceForm({
   }
 
   return (
-    <form onSubmit={onSave} noValidate className="space-y-6">
-      <ErrorSummary errors={summaryErrors} />
+    <PageShell
+      title={mode === "create" ? "New invoice" : `Edit ${detail?.invoiceNumber ?? "invoice"}`}
+      description={mode === "create"
+        ? "Build an invoice with GST-aware totals and a reviewable payment schedule."
+        : `Update ${detail?.invoiceNumber ?? "this invoice"} while preserving its audit trail.`}
+      breadcrumb={
+        <BreadcrumbTrail items={[
+          { label: "Sales", href: ROUTES.invoices },
+          { label: "Invoices", href: ROUTES.invoices },
+          { label: mode === "create" ? "New invoice" : "Edit" },
+        ]} />
+      }
+      actions={mode === "edit" && detail ? (
+        <Button asChild variant="ghost" size="sm">
+          <Link href={ROUTES.invoiceDetail(detail.id)}>Back to invoice</Link>
+        </Button>
+      ) : undefined}
+    >
+      <form onSubmit={onSave} noValidate className="space-y-6">
+        <ErrorSummary errors={summaryErrors} />
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Invoice details</CardTitle>
-        </CardHeader>
-        <CardContent className="grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
-          <FormField label="Customer" htmlFor="customerId" required error={formState.errors.customerId?.message}>
-            <SearchableSelect
-              ariaLabel="Customer"
-              value={watched.customerId}
-              options={customerOptions.map((item) => ({
-                id: item.id, label: item.label, secondary: item.email ?? item.stateCode,
-              }))}
-              onSearch={searchCustomerOptions}
-              onSelect={(option) => {
-                const customer = [...customerOptions, ...customerResults].find((item) => item.id === option.id);
-                if (!customer) return;
-                setValue("customerId", customer.id, { shouldDirty: true, shouldValidate: true });
-                setValue("destinationStateCode", customer.stateCode ?? options.organizationStateCode, { shouldDirty: true });
-                setValue("gstin", customer.gstin ?? options.organizationGstin, { shouldDirty: true });
-                if (customer.currencyCode && SUPPORTED_CURRENCIES.includes(customer.currencyCode as Currency)) {
-                  applyCurrency(customer.currencyCode as Currency);
-                }
-              }}
-              onCreate={() => setCustomerDialogOpen(true)}
-              invalid={Boolean(formState.errors.customerId)}
+        <SectionCard title="Invoice information" description="Choose the customer, currency and payment timing.">
+          <div className="grid gap-5 sm:grid-cols-2 xl:grid-cols-3">
+            <FormField label="Customer" htmlFor="customerId" required error={formState.errors.customerId?.message}>
+              <SearchableSelect
+                id="customerId"
+                ariaLabel="Customer"
+                value={watched.customerId}
+                options={customerOptions.map((item) => ({
+                  id: item.id, label: item.label, secondary: item.email ?? item.stateCode,
+                }))}
+                onSearch={searchCustomerOptions}
+                onSelect={(option) => {
+                  const customer = [...customerOptions, ...customerResults].find((item) => item.id === option.id);
+                  if (!customer) return;
+                  setValue("customerId", customer.id, { shouldDirty: true, shouldValidate: true });
+                  setValue("destinationStateCode", customer.stateCode ?? options.organizationStateCode, { shouldDirty: true });
+                  setValue("gstin", customer.gstin ?? options.organizationGstin, { shouldDirty: true });
+                  if (customer.currencyCode && SUPPORTED_CURRENCIES.includes(customer.currencyCode as Currency)) {
+                    applyCurrency(customer.currencyCode as Currency);
+                  }
+                }}
+                onCreate={() => setCustomerDialogOpen(true)}
+                invalid={Boolean(formState.errors.customerId)}
+              />
+            </FormField>
+
+            <FormField label="Currency" htmlFor="currencyCode" required error={formState.errors.currencyCode?.message}>
+              <Select value={currency} onValueChange={(value) => applyCurrency(value as Currency)}>
+                <SelectTrigger id="currencyCode" aria-invalid={Boolean(formState.errors.currencyCode)}>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {SUPPORTED_CURRENCIES.map((item) => (
+                    <SelectItem key={item} value={item}>{item}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </FormField>
+
+            <FormField label="Invoice date" htmlFor="invoiceDate" required error={formState.errors.invoiceDate?.message}>
+              <Input id="invoiceDate" type="date" {...register("invoiceDate")} aria-invalid={Boolean(formState.errors.invoiceDate)} />
+            </FormField>
+
+            <FormField label="Payment terms" htmlFor="paymentTerms" required error={formState.errors.paymentTerms?.message}>
+              <Select
+                value={String(watched.paymentTerms ?? options.paymentTermsDays)}
+                onValueChange={(value) => setValue("paymentTerms", Number(value), { shouldDirty: true, shouldValidate: true })}
+              >
+                <SelectTrigger id="paymentTerms" aria-invalid={Boolean(formState.errors.paymentTerms)}>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {[0, 7, 10, 15, 30, 45, 60, 90].map((days) => (
+                    <SelectItem key={days} value={String(days)}>{days} days</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </FormField>
+
+            <ComputedField
+              label="Issue date"
+              value={derivedDates ? toCalendarDateInput(derivedDates.issueDate) : ""}
             />
-          </FormField>
 
-          <FormField label="Currency" htmlFor="currencyCode" required error={formState.errors.currencyCode?.message}>
-            <Select
-              value={currency}
-              onValueChange={(value) => applyCurrency(value as Currency)}
+            <ComputedField
+              label="Due date"
+              value={derivedDates ? toCalendarDateInput(derivedDates.dueDate) : ""}
+            />
+
+            <FormField label="Reference" htmlFor="reference" error={formState.errors.reference?.message}>
+              <Input id="reference" placeholder="PO number" {...register("reference")} />
+            </FormField>
+          </div>
+        </SectionCard>
+
+        <SectionCard title="Tax & place of supply" description="Ensure GST is calculated with the correct jurisdiction.">
+          <div className="grid gap-5 sm:grid-cols-2 xl:grid-cols-4">
+            <FormField label="GSTIN" htmlFor="gstin" error={formState.errors.gstin?.message}>
+              <Input id="gstin" maxLength={15} placeholder="27AABCZ1234M1Z5" {...register("gstin")} />
+            </FormField>
+
+            <FormField label="Source state" htmlFor="sourceStateCode" error={formState.errors.sourceStateCode?.message}>
+              <Input id="sourceStateCode" maxLength={2} placeholder="MH" {...register("sourceStateCode")} />
+            </FormField>
+
+            <FormField label="Place of supply" htmlFor="destinationStateCode" error={formState.errors.destinationStateCode?.message}>
+              <Input id="destinationStateCode" maxLength={2} placeholder="KA" {...register("destinationStateCode")} />
+            </FormField>
+
+            <div className="space-y-1.5">
+              <span className="ui-label">Reverse charge</span>
+              <label className="flex h-10 cursor-pointer items-center gap-2 rounded-control border bg-background px-3 text-sm">
+                <Checkbox
+                  checked={watched.isReverseCharge ?? false}
+                  onCheckedChange={(checked) => setValue("isReverseCharge", checked === true, { shouldDirty: true })}
+                />
+                Applicable
+              </label>
+            </div>
+          </div>
+        </SectionCard>
+
+        <div className="grid items-start gap-6 xl:grid-cols-[minmax(0,1fr)_360px]">
+          <div className="space-y-6 min-w-0">
+            <SectionCard
+              title="Line items"
+              description="Products, quantities and taxes applied to this invoice."
+              actions={
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => append({
+                    productId: "", description: "", quantity: "1", unitPrice: "0",
+                    discountPercent: "0", taxable: true, taxIds: [],
+                  })}
+                >
+                  <Plus aria-hidden="true" /> Add line
+                </Button>
+              }
+              contentClassName="space-y-4 p-4 sm:p-6"
             >
-              <SelectTrigger id="currencyCode" aria-invalid={Boolean(formState.errors.currencyCode)}>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {SUPPORTED_CURRENCIES.map((item) => (
-                  <SelectItem key={item} value={item}>{item}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </FormField>
-
-          <FormField label="Issue date" htmlFor="issueDate" required error={formState.errors.issueDate?.message}>
-            <Input id="issueDate" type="date" {...register("issueDate")} aria-invalid={Boolean(formState.errors.issueDate)} />
-          </FormField>
-
-          <FormField label="Due date" htmlFor="dueDate" required error={formState.errors.dueDate?.message}>
-            <Input id="dueDate" type="date" {...register("dueDate")} aria-invalid={Boolean(formState.errors.dueDate)} />
-          </FormField>
-
-          <FormField label="GSTIN" htmlFor="gstin" error={formState.errors.gstin?.message}>
-            <Input id="gstin" maxLength={15} placeholder="27AABCZ1234M1Z5" {...register("gstin")} />
-          </FormField>
-
-          <FormField label="Source state" htmlFor="sourceStateCode" error={formState.errors.sourceStateCode?.message}>
-            <Input id="sourceStateCode" maxLength={2} placeholder="MH" {...register("sourceStateCode")} />
-          </FormField>
-
-          <FormField label="Place of supply" htmlFor="destinationStateCode" error={formState.errors.destinationStateCode?.message}>
-            <Input id="destinationStateCode" maxLength={2} placeholder="KA" {...register("destinationStateCode")} />
-          </FormField>
-
-          <FormField label="Reference" htmlFor="reference" error={formState.errors.reference?.message}>
-            <Input id="reference" placeholder="PO number" {...register("reference")} />
-          </FormField>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader className="flex flex-row items-center justify-between space-y-0">
-          <CardTitle>Line items</CardTitle>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={() => append({
-              productId: "", description: "", quantity: "1", unitPrice: "0",
-              discountPercent: "0", taxable: true, taxIds: [],
-            })}
-          >
-            <Plus aria-hidden="true" /> Add line
-          </Button>
-        </CardHeader>
-        <CardContent className="space-y-4">
+              <div className="space-y-4">
           {formState.errors.lines?.message ? (
             <p role="alert" className="text-sm font-medium text-destructive">{formState.errors.lines.message}</p>
           ) : null}
@@ -484,11 +561,12 @@ export function InvoiceForm({
             return (
               <div
                 key={field.id}
-                className="grid gap-3 rounded-lg border bg-background p-4 md:grid-cols-12 md:items-start"
+                className="grid gap-4 rounded-panel border bg-background p-4 md:grid-cols-12 md:items-start"
                 aria-label={`Line item ${index + 1}`}
               >
                 <div className="md:col-span-4 space-y-2">
                   <SearchableSelect
+                    id={`lines.${index}.productId`}
                     ariaLabel={`Product for line ${index + 1}`}
                     value={watched.lines?.[index]?.productId}
                     options={productOptions.map((item) => ({
@@ -606,127 +684,105 @@ export function InvoiceForm({
               </div>
             );
           })}
-        </CardContent>
-      </Card>
-
-      <div className="grid gap-6 lg:grid-cols-[1fr_340px]">
-        <Card>
-          <CardHeader><CardTitle>Additional information</CardTitle></CardHeader>
-          <CardContent className="space-y-4">
-            <div className="grid gap-4 sm:grid-cols-2">
-              <FormField label="Shipping" htmlFor="shippingAmount" error={formState.errors.shippingAmount?.message}>
-                <MoneyInput
-                  id="shippingAmount"
-                  value={watched.shippingAmount ?? "0"}
-                  currency={currency}
-                  onChange={(value) => setValue("shippingAmount", value, { shouldDirty: true })}
-                />
-              </FormField>
-              <FormField label="Round off" htmlFor="roundOffAmount" error={formState.errors.roundOffAmount?.message}>
-                <MoneyInput
-                  id="roundOffAmount"
-                  value={autoRoundOff ? (totals?.roundOffAmount.toString() ?? "0") : (watched.roundOffAmount ?? "0")}
-                  currency={currency}
-                  onChange={(value) => {
-                    setAutoRoundOff(false);
-                    setValue("roundOffAmount", value, { shouldDirty: true });
-                  }}
-                />
-              </FormField>
-            </div>
-            <label className="flex cursor-pointer items-center gap-2 text-sm text-muted-foreground">
-              <Checkbox checked={autoRoundOff} onCheckedChange={(checked) => setAutoRoundOff(checked === true)} />
-              Round total to nearest whole number
-            </label>
-            <label className="flex cursor-pointer items-center gap-2 text-sm text-muted-foreground">
-              <Checkbox
-                checked={watched.isReverseCharge ?? false}
-                onCheckedChange={(checked) => setValue("isReverseCharge", checked === true, { shouldDirty: true })}
-              />
-              Reverse charge
-            </label>
-            <FormField label="Notes" htmlFor="notes" error={formState.errors.notes?.message}>
-              <Textarea id="notes" rows={3} {...register("notes")} />
-            </FormField>
-            <FormField label="Terms" htmlFor="terms" error={formState.errors.terms?.message}>
-              <Textarea id="terms" rows={2} {...register("terms")} />
-            </FormField>
-            <FormField label="Footer" htmlFor="footer" error={formState.errors.footer?.message}>
-              <Input id="footer" {...register("footer")} />
-            </FormField>
-            {mode === "edit" ? (
-              <FormField label="Reason for change" htmlFor="changeReason" error={formState.errors.changeReason?.message}>
-                <Input id="changeReason" {...register("changeReason")} />
-              </FormField>
-            ) : null}
-          </CardContent>
-        </Card>
-
-        <Card className="h-fit lg:sticky lg:top-20">
-          <CardHeader><CardTitle>Summary</CardTitle></CardHeader>
-          <CardContent className="space-y-3" aria-live="polite">
-            <div className="flex justify-between text-sm">
-              <span className="text-muted-foreground">Subtotal</span>
-              <span className="num">{formatMoney(totals?.subtotal ?? 0, currency)}</span>
-            </div>
-            <div className="flex justify-between text-sm">
-              <span className="text-muted-foreground">Discount</span>
-              <span className="num">-{formatMoney(totals?.discountAmount ?? 0, currency)}</span>
-            </div>
-            <div className="flex justify-between text-sm">
-              <span className="text-muted-foreground">Taxable amount</span>
-              <span className="num">{formatMoney(totals?.taxableAmount ?? 0, currency)}</span>
-            </div>
-            {totals?.isInterState ? (
-              <div className="flex justify-between text-sm">
-                <span className="text-muted-foreground">IGST</span>
-                <span className="num">{formatMoney(totals.igstAmount, currency)}</span>
               </div>
-            ) : (
-              <>
-                <div className="flex justify-between text-sm">
-                  <span className="text-muted-foreground">CGST</span>
-                  <span className="num">{formatMoney(totals?.cgstAmount ?? 0, currency)}</span>
+            </SectionCard>
+
+            <SectionCard title="Charges & instructions" description="Optional adjustments and customer-facing text.">
+              <div className="space-y-5">
+                <div className="grid gap-5 sm:grid-cols-2">
+                  <FormField label="Shipping" htmlFor="shippingAmount" error={formState.errors.shippingAmount?.message}>
+                    <MoneyInput
+                      id="shippingAmount"
+                      value={watched.shippingAmount ?? "0"}
+                      currency={currency}
+                      onChange={(value) => setValue("shippingAmount", value, { shouldDirty: true })}
+                    />
+                  </FormField>
+                  <FormField label="Round off" htmlFor="roundOffAmount" error={formState.errors.roundOffAmount?.message}>
+                    <MoneyInput
+                      id="roundOffAmount"
+                      value={effectiveRoundOff}
+                      currency={currency}
+                      onChange={(value) => {
+                        setAutoRoundOff(false);
+                        setValue("roundOffAmount", value, { shouldDirty: true });
+                      }}
+                    />
+                  </FormField>
                 </div>
-                <div className="flex justify-between text-sm">
-                  <span className="text-muted-foreground">SGST</span>
-                  <span className="num">{formatMoney(totals?.sgstAmount ?? 0, currency)}</span>
+
+                <label className="flex w-fit cursor-pointer items-center gap-2 text-sm text-muted-foreground">
+                  <Checkbox checked={autoRoundOff} onCheckedChange={(checked) => setAutoRoundOff(checked === true)} />
+                  Round total to nearest whole number
+                </label>
+
+                <div className="ui-divider" />
+
+                <div className="grid gap-5 sm:grid-cols-2">
+                  <FormField label="Notes" htmlFor="notes" error={formState.errors.notes?.message}>
+                    <Textarea id="notes" rows={3} {...register("notes")} />
+                  </FormField>
+                  <FormField label="Terms" htmlFor="terms" error={formState.errors.terms?.message}>
+                    <Textarea id="terms" rows={3} {...register("terms")} />
+                  </FormField>
+                  <FormField label="Footer" htmlFor="footer" error={formState.errors.footer?.message}>
+                    <Input id="footer" {...register("footer")} />
+                  </FormField>
+                  {mode === "edit" ? (
+                    <FormField label="Reason for change" htmlFor="changeReason" error={formState.errors.changeReason?.message}>
+                      <Input id="changeReason" {...register("changeReason")} />
+                    </FormField>
+                  ) : null}
                 </div>
-              </>
-            )}
-            <div className="flex justify-between text-sm">
-              <span className="text-muted-foreground">Shipping</span>
-              <span className="num">{formatMoney(totals?.shippingAmount ?? 0, currency)}</span>
-            </div>
-            <div className="flex justify-between text-sm">
-              <span className="text-muted-foreground">Round off</span>
-              <span className="num">{formatMoney(totals?.roundOffAmount ?? 0, currency)}</span>
-            </div>
-            <div className="flex justify-between border-t pt-3 text-base font-semibold">
-              <span>Grand total</span>
-              <span className="num">{formatMoney(totals?.total ?? 0, currency)}</span>
+              </div>
+            </SectionCard>
+          </div>
+
+          <SummaryPanel title="Invoice summary" className="xl:sticky xl:top-20">
+            <div className="space-y-3" aria-live="polite">
+              <SummaryRow label="Subtotal" value={formatMoney(totals?.subtotal ?? 0, currency)} muted />
+              <SummaryRow label="Discount" value={`-${formatMoney(totals?.discountAmount ?? 0, currency)}`} muted />
+              <SummaryRow label="Taxable amount" value={formatMoney(totals?.taxableAmount ?? 0, currency)} muted />
+              {totals?.isInterState ? (
+                <SummaryRow label="IGST" value={formatMoney(totals.igstAmount, currency)} muted />
+              ) : (
+                <>
+                  <SummaryRow label="CGST" value={formatMoney(totals?.cgstAmount ?? 0, currency)} muted />
+                  <SummaryRow label="SGST" value={formatMoney(totals?.sgstAmount ?? 0, currency)} muted />
+                </>
+              )}
+              <SummaryRow label="Shipping" value={formatMoney(totals?.shippingAmount ?? 0, currency)} muted />
+              <SummaryRow label="Round off" value={formatMoney(totals?.roundOffAmount ?? 0, currency)} muted />
+              <SummaryRow label="Grand total" value={formatMoney(totals?.total ?? 0, currency)} emphasis />
             </div>
             <p className="text-xs text-muted-foreground">
               {savedAt ? `Draft saved ${savedAt.toLocaleTimeString()}.` : `All amounts in ${currency}.`}
             </p>
-          </CardContent>
-        </Card>
-      </div>
+          </SummaryPanel>
+        </div>
 
-      <div className="sticky bottom-0 z-20 -mx-4 flex flex-wrap items-center justify-end gap-2 border-t bg-background/95 px-4 py-4 backdrop-blur sm:-mx-6 sm:px-6">
-        <Button type="button" variant="ghost" onClick={() => router.back()} disabled={Boolean(submitting)}>
-          Cancel
-        </Button>
-        <Button type="submit" variant="outline" disabled={Boolean(submitting)}>
-          {submitting === "save" ? "Saving…" : mode === "create" ? (draftId ? "Update draft" : "Save draft") : "Save changes"}
-        </Button>
-        {mode === "create" ? (
-          <Button type="button" onClick={onSaveAndSend} disabled={Boolean(submitting)}>
-            <Check aria-hidden="true" />
-            {submitting === "send" ? "Sending…" : "Save & send"}
-          </Button>
-        ) : null}
-      </div>
+        <div className="sticky bottom-4 z-30 flex flex-col gap-3 rounded-panel border bg-background/95 p-3 shadow-sticky backdrop-blur sm:flex-row sm:items-center sm:justify-between">
+          <p className="text-xs text-muted-foreground">
+            {savedAt
+              ? `Draft saved at ${savedAt.toLocaleTimeString()}. Changes are saved locally until you submit.`
+              : "Drafts save automatically after the customer and first line item are complete."}
+          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button type="button" variant="ghost" onClick={() => router.back()} disabled={Boolean(submitting)}>
+              Cancel
+            </Button>
+            <Button type="submit" variant="outline" disabled={Boolean(submitting)}>
+              {submitting === "save" ? "Saving…" : mode === "create" ? (draftId ? "Update draft" : "Save draft") : "Save changes"}
+            </Button>
+            {mode === "create" ? (
+              <Button type="button" onClick={onSaveAndSend} disabled={Boolean(submitting)}>
+                <Check aria-hidden="true" />
+                {submitting === "send" ? "Sending…" : "Save & send"}
+              </Button>
+            ) : null}
+          </div>
+        </div>
+      </form>
 
       <Dialog open={customerDialogOpen} onOpenChange={setCustomerDialogOpen}>
         <DialogContent>
@@ -806,6 +862,6 @@ export function InvoiceForm({
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </form>
+    </PageShell>
   );
 }

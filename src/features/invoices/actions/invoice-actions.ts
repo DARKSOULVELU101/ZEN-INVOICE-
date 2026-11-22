@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { ROUTES } from "@/config/app";
 import { ErrorCodes, fail, type FieldErrors, type Result } from "@/lib/errors/result";
-import { invoiceFormSchema } from "../schemas/invoice";
+import { invoicePayloadSchema } from "../schemas/invoice";
 import { recordPaymentSchema } from "../schemas/payment";
 import type { InvoiceDetail } from "../types/invoice";
 import {
@@ -38,7 +38,7 @@ function revalidateInvoicePaths(id?: string) {
 }
 
 export async function createInvoiceAction(values: unknown): Promise<Result<InvoiceDetail>> {
-  const parsed = invoiceFormSchema.safeParse(values);
+  const parsed = invoicePayloadSchema.safeParse(values);
   if (!parsed.success) return validationFailure(parsed.error);
   const result = await createInvoice(parsed.data);
   if (result.ok) revalidateInvoicePaths(result.data.id);
@@ -50,7 +50,7 @@ export async function updateInvoiceAction(
   values: unknown,
   expectedVersion: number,
 ): Promise<Result<InvoiceDetail>> {
-  const parsed = invoiceFormSchema.safeParse(values);
+  const parsed = invoicePayloadSchema.safeParse(values);
   if (!parsed.success) return validationFailure(parsed.error);
   const result = await updateInvoice(id, parsed.data, expectedVersion);
   if (result.ok) revalidateInvoicePaths(result.data.id);
@@ -61,7 +61,7 @@ export async function saveDraftAction(
   values: unknown,
   id?: string,
 ): Promise<Result<InvoiceDetail>> {
-  const parsed = invoiceFormSchema.safeParse(values);
+  const parsed = invoicePayloadSchema.safeParse(values);
   if (!parsed.success) return validationFailure(parsed.error);
   const result = id
     ? await updateInvoice(id, parsed.data, parsed.data.version ?? 1)

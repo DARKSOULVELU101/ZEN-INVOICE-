@@ -23,7 +23,9 @@ export interface InvoiceInput {
   isReverseCharge?: boolean;
   shippingAmount?: string | number;
   roundOffAmount?: string | number;
+  invoiceDate: Date;
   issueDate: Date;
+  paymentTerms: number;
   dueDate: Date;
   reference?: string | null;
   notes?: string | null;
@@ -67,7 +69,9 @@ export interface InvoiceListItem {
   displayStatus: DisplayInvoiceStatus;
   customerId: string;
   customerName: string;
+  invoiceDate: string;
   issueDate: string;
+  paymentTerms: number;
   dueDate: string;
   currencyCode: string;
   subtotal: string;

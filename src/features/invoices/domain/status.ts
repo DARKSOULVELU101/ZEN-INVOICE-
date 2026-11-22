@@ -1,4 +1,5 @@
 import { DomainError, ErrorCodes } from "@/lib/errors/result";
+import { toCalendarDateInput } from "./dates";
 
 export const INVOICE_STATUSES = [
   "DRAFT", "SENT", "VIEWED", "PARTIALLY_PAID", "PAID", "CANCELLED",
@@ -74,7 +75,7 @@ export function isOverdue(
   asOf: Date = new Date(),
 ): boolean {
   if (!["SENT", "VIEWED", "PARTIALLY_PAID"].includes(status)) return false;
-  return dueDate.getTime() < asOf.getTime() && balanceDue.gt(0);
+  return toCalendarDateInput(dueDate) < toCalendarDateInput(asOf) && balanceDue.gt(0);
 }
 
 export function displayStatus(

@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
+import { toCalendarDateInput } from "@/features/invoices/domain/dates";
 import { reportTypes, reportQuerySchema } from "@/features/reports/schemas/report";
 import { getReport } from "@/features/reports/server/report-service";
 
@@ -54,7 +55,7 @@ export default async function ReportsPage({ searchParams }: { searchParams: Sear
               <input
                 type="date"
                 name="from"
-                defaultValue={query.from?.toISOString().slice(0, 10)}
+                defaultValue={query.from ? toCalendarDateInput(query.from) : undefined}
                 className="h-10 rounded-md border border-input bg-background px-3 text-sm"
               />
             </label>
@@ -63,7 +64,7 @@ export default async function ReportsPage({ searchParams }: { searchParams: Sear
               <input
                 type="date"
                 name="to"
-                defaultValue={query.to?.toISOString().slice(0, 10)}
+                defaultValue={query.to ? toCalendarDateInput(query.to) : undefined}
                 className="h-10 rounded-md border border-input bg-background px-3 text-sm"
               />
             </label>

@@ -22,7 +22,7 @@ import {
   toResultAsync,
   type Result,
 } from "@/lib/errors/result";
-import { cursorCondition, nextCursor } from "@/lib/query/cursor";
+import { cursorCondition, decodeCursor, nextCursor } from "@/lib/query/cursor";
 import { assertOwnership, dataScopeFor, requirePermission } from "@/lib/rbac/guard";
 import {
   clampNonNegative,
@@ -32,9 +32,15 @@ import {
   toDbDecimal,
   type DecimalInput,
 } from "@/lib/money/decimal";
+import {
+  deriveInvoiceDates,
+  parseCalendarDate,
+  toCalendarDateInput,
+  todayCalendarDate,
+} from "../domain/dates";
 import { calculateInvoiceTotals, taxComponentFor, type TaxRateInput } from "../domain/totals";
 import { displayStatus, isEditable, transition } from "../domain/status";
-import type { InvoiceFormOutput, InvoiceListQuery } from "../schemas/invoice";
+import { invoiceSortFields, type InvoiceFormOutput, type InvoiceListQuery } from "../schemas/invoice";
 import type { RecordPaymentInput } from "../schemas/payment";
 import type {
   InvoiceDetail,
@@ -65,7 +71,9 @@ const invoiceListSelect = {
   id: true,
   invoiceNumber: true,
   status: true,
+  invoiceDate: true,
   issueDate: true,
+  paymentTerms: true,
   dueDate: true,
   currencyCode: true,
   subtotal: true,
@@ -103,8 +111,10 @@ function mapListItem(record: InvoiceListRecord): InvoiceListItem {
     displayStatus: displayStatus(record.status, record.dueDate, record.balanceDue),
     customerId: record.customer.id,
     customerName: record.customer.displayName,
-    issueDate: record.issueDate.toISOString().slice(0, 10),
-    dueDate: record.dueDate.toISOString().slice(0, 10),
+    invoiceDate: toCalendarDateInput(record.invoiceDate),
+    issueDate: toCalendarDateInput(record.issueDate),
+    paymentTerms: record.paymentTerms,
+    dueDate: toCalendarDateInput(record.dueDate),
     currencyCode: record.currencyCode,
     subtotal: numberString(record.subtotal),
     discountAmount: numberString(record.discountAmount),
@@ -159,7 +169,7 @@ function mapDetail(record: InvoiceRecord): InvoiceDetail {
       id: application.payment.id,
       paymentNumber: application.payment.paymentNumber,
       amount: numberString(application.amount),
-      paidAt: application.payment.paidAt.toISOString().slice(0, 10),
+      paidAt: toCalendarDateInput(application.payment.paidAt),
       method: application.payment.method,
       reference: application.payment.reference,
     }));
@@ -312,7 +322,7 @@ async function resolveExchangeRate(
   if (!rate) {
     throw new DomainError(
       ErrorCodes.EXCHANGE_RATE_MISSING,
-      `No exchange rate is configured for ${from} to ${to} on or before ${date.toISOString().slice(0, 10)}.`,
+      `No exchange rate is configured for ${from} to ${to} on or before ${toCalendarDateInput(date)}.`,
     );
   }
   return new Decimal(rate.rate.toString());
@@ -494,20 +504,26 @@ export async function listInvoices(query: InvoiceListQuery): Promise<Result<Invo
     if (query.status) where.status = query.status;
     if (query.customerId) where.customerId = query.customerId;
     if (query.from || query.to) {
-      where.issueDate = {
+      where.invoiceDate = {
         ...(query.from ? { gte: query.from } : {}),
         ...(query.to ? { lte: query.to } : {}),
       };
     }
     if (query.overdue) {
       where.status = { in: ["SENT", "VIEWED", "PARTIALLY_PAID"] };
-      where.dueDate = { lt: new Date() };
+      where.dueDate = { lt: parseCalendarDate(todayCalendarDate())! };
       where.balanceDue = { gt: 0 };
     }
     if (dataScopeFor(session) === "own") where.createdById = session.user.id;
 
-    const cursor = decode(query.cursor);
-    const cursorFilter = cursorCondition(cursor);
+    const decodedCursor = decodeCursor(query.cursor);
+    const cursor = decodedCursor
+      && decodedCursor.sort === query.sort
+      && decodedCursor.dir === query.dir
+      && invoiceSortFields.includes(decodedCursor.sort as (typeof invoiceSortFields)[number])
+      ? decodedCursor
+      : null;
+    const cursorFilter = cursorCondition(cursor) as Prisma.InvoiceWhereInput | undefined;
     if (cursorFilter) where.AND = [cursorFilter];
 
     const orderBy: Prisma.InvoiceOrderByWithRelationInput[] = [
@@ -526,28 +542,14 @@ export async function listInvoices(query: InvoiceListQuery): Promise<Result<Invo
 
     return {
       items: rows.slice(0, query.limit).map(mapListItem),
-      ...(nextCursor(rows, query.limit) ? { nextCursor: nextCursor(rows, query.limit) } : {}),
+      ...(nextCursor(rows, query.limit, query.sort, query.dir)
+        ? { nextCursor: nextCursor(rows, query.limit, query.sort, query.dir) }
+        : {}),
       ...(total !== undefined ? { total } : {}),
     };
   });
 }
 
-function decode(value: string | undefined) {
-  if (!value) return null;
-  try {
-    const parsed: unknown = JSON.parse(Buffer.from(value, "base64url").toString("utf8"));
-    if (
-      typeof parsed === "object" && parsed !== null &&
-      "createdAt" in parsed && "id" in parsed &&
-      typeof parsed.createdAt === "string" && typeof parsed.id === "string"
-    ) {
-      return { createdAt: parsed.createdAt, id: parsed.id };
-    }
-  } catch {
-    return null;
-  }
-  return null;
-}
 
 export async function getInvoice(id: string): Promise<Result<InvoiceDetail>> {
   return toResultAsync(async () => {
@@ -580,13 +582,14 @@ export async function createInvoice(input: InvoiceFormOutput): Promise<Result<In
       destinationStateCode,
     });
     const invoiceNumber = await allocateNumber(db, DocumentType.INVOICE, settings.prefix, session.organizationId);
+    const dates = deriveInvoiceDates(input.invoiceDate, input.paymentTerms);
     const baseCurrencyCode = settings.currency;
     const exchangeRate = await resolveExchangeRate(
       db,
       session.organizationId,
       baseCurrencyCode,
       input.currencyCode,
-      input.issueDate,
+      dates.invoiceDate,
     );
 
     const created = await db.$transaction(async (tx) => {
@@ -603,8 +606,10 @@ export async function createInvoice(input: InvoiceFormOutput): Promise<Result<In
           sourceStateCode,
           destinationStateCode,
           isReverseCharge: input.isReverseCharge ?? false,
-          issueDate: input.issueDate,
-          dueDate: input.dueDate,
+          invoiceDate: dates.invoiceDate,
+          issueDate: dates.issueDate,
+          paymentTerms: input.paymentTerms,
+          dueDate: dates.dueDate,
           reference: input.reference ?? null,
           notes: input.notes ?? null,
           terms: input.terms ?? null,
@@ -670,6 +675,7 @@ export async function updateInvoice(
         `Invoices in ${existing.status} status cannot be edited.`,
       );
     }
+    const preservedStatus = transition(existing.status, "EDIT");
     if (existing.version !== expectedVersion) throw new ConflictError();
     if (existing.status !== "DRAFT" && !input.changeReason) {
       throw new DomainError(ErrorCodes.INVARIANT, "A reason is required when editing an issued invoice.");
@@ -687,12 +693,13 @@ export async function updateInvoice(
       sourceStateCode,
       destinationStateCode,
     });
+    const dates = deriveInvoiceDates(input.invoiceDate, input.paymentTerms);
     const exchangeRate = await resolveExchangeRate(
       db,
       session.organizationId,
       settings.currency,
       input.currencyCode,
-      input.issueDate,
+      dates.invoiceDate,
     );
 
     const updated = await db.$transaction(async (tx) => {
@@ -701,8 +708,10 @@ export async function updateInvoice(
         status: existing.status,
         customerId: existing.customerId,
         currencyCode: existing.currencyCode,
-        issueDate: existing.issueDate,
-        dueDate: existing.dueDate,
+        invoiceDate: existing.invoiceDate.toISOString(),
+        issueDate: existing.issueDate.toISOString(),
+        paymentTerms: existing.paymentTerms,
+        dueDate: existing.dueDate.toISOString(),
         total: existing.total.toString(),
         items: existing.items.map((item) => ({
           description: item.description,
@@ -737,9 +746,12 @@ export async function updateInvoice(
           gstin: input.gstin ?? customer.gstin ?? organizationProfile.gstin,
           sourceStateCode,
           destinationStateCode,
+          status: preservedStatus,
           isReverseCharge: input.isReverseCharge ?? false,
-          issueDate: input.issueDate,
-          dueDate: input.dueDate,
+          invoiceDate: dates.invoiceDate,
+          issueDate: dates.issueDate,
+          paymentTerms: input.paymentTerms,
+          dueDate: dates.dueDate,
           reference: input.reference ?? null,
           notes: input.notes ?? null,
           terms: input.terms ?? null,
@@ -927,6 +939,10 @@ export async function duplicateInvoice(id: string): Promise<Result<InvoiceDetail
 
     const settings = await loadSettings(db, session.organizationId);
     const invoiceNumber = await allocateNumber(db, DocumentType.INVOICE, settings.prefix, session.organizationId);
+    const duplicateDates = deriveInvoiceDates(
+      parseCalendarDate(todayCalendarDate())!,
+      existing.paymentTerms,
+    );
 
     const created = await db.invoice.create({
       data: {
@@ -937,8 +953,10 @@ export async function duplicateInvoice(id: string): Promise<Result<InvoiceDetail
         currencyCode: existing.currencyCode,
         baseCurrencyCode: existing.baseCurrencyCode,
         exchangeRate: existing.exchangeRate,
-        issueDate: new Date(),
-        dueDate: new Date(Date.now() + settings.dueDays * 86_400_000),
+        invoiceDate: duplicateDates.invoiceDate,
+        issueDate: duplicateDates.issueDate,
+        paymentTerms: existing.paymentTerms,
+        dueDate: duplicateDates.dueDate,
         reference: existing.reference,
         notes: existing.notes,
         terms: existing.terms,
@@ -1027,7 +1045,7 @@ export async function listPayments(): Promise<Result<import("../types/invoice").
       invoiceNumber: payment.invoice?.invoiceNumber ?? null,
       amount: numberString(payment.amount),
       currencyCode: payment.currencyCode,
-      paidAt: payment.paidAt.toISOString().slice(0, 10),
+      paidAt: toCalendarDateInput(payment.paidAt),
       method: payment.method,
       status: payment.status,
     }));

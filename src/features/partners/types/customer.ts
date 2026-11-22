@@ -5,6 +5,7 @@ export interface CustomerOption {
   currencyCode: string | null;
   stateCode: string | null;
   gstin: string | null;
+  paymentTermsDays?: number | null;
 }
 
 export interface CustomerListItem extends CustomerOption {

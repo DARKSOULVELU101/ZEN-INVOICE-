@@ -26,10 +26,22 @@ describe("invoice status machine", () => {
     expect(isEditable("PAID")).toBe(false);
   });
 
-  it("derives overdue instead of storing it", () => {
-    const past = new Date("2020-01-01T00:00:00.000Z");
-    expect(isOverdue("SENT", past, new Decimal(10), new Date("2021-01-01T00:00:00.000Z"))).toBe(true);
-    expect(isOverdue("DRAFT", past, new Decimal(10), new Date("2021-01-01T00:00:00.000Z"))).toBe(false);
-    expect(displayStatus("VIEWED", past, new Decimal(0), new Date("2021-01-01T00:00:00.000Z"))).toBe("VIEWED");
+  it("preserves status when an editable invoice date is changed", () => {
+    expect(transition("DRAFT", "EDIT")).toBe("DRAFT");
+    expect(transition("SENT", "EDIT")).toBe("SENT");
+    expect(transition("VIEWED", "EDIT")).toBe("VIEWED");
+    expect(transition("PARTIALLY_PAID", "EDIT")).toBe("PARTIALLY_PAID");
+    expect(canTransition("PAID", "EDIT")).toBe(false);
+    expect(canTransition("CANCELLED", "EDIT")).toBe(false);
+  });
+
+  it("derives overdue using end-of-day semantics in the invoice timezone", () => {
+    const dueToday = new Date("2026-01-01T00:00:00.000Z");
+    const dueYesterday = new Date("2025-12-31T00:00:00.000Z");
+    const endOfToday = new Date("2026-01-01T18:00:00.000Z");
+    expect(isOverdue("SENT", dueToday, new Decimal(10), endOfToday)).toBe(false);
+    expect(isOverdue("SENT", dueYesterday, new Decimal(10), endOfToday)).toBe(true);
+    expect(isOverdue("DRAFT", dueYesterday, new Decimal(10), endOfToday)).toBe(false);
+    expect(displayStatus("VIEWED", dueYesterday, new Decimal(0), endOfToday)).toBe("VIEWED");
   });
 });

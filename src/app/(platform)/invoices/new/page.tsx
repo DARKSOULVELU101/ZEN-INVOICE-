@@ -1,6 +1,5 @@
 import { Suspense } from "react";
 import { ErrorState } from "@/components/shared/feedback";
-import { PageHeader } from "@/components/shared/page-header";
 import { FormSkeleton } from "@/components/shared/skeletons";
 import { getInvoiceFormOptions } from "@/features/invoices/server/form-options";
 import { InvoiceForm } from "@/features/invoices/components/shared/invoice-form";
@@ -16,11 +15,8 @@ async function CreateInvoiceContent() {
 
 export default function NewInvoicePage() {
   return (
-    <div className="space-y-6">
-      <PageHeader title="New invoice" description="Add a customer and at least one line item. Totals and tax update as you type." />
-      <Suspense fallback={<FormSkeleton />}>
-        <CreateInvoiceContent />
-      </Suspense>
-    </div>
+    <Suspense fallback={<FormSkeleton />}>
+      <CreateInvoiceContent />
+    </Suspense>
   );
 }

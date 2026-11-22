@@ -1,11 +1,7 @@
 import { Suspense } from "react";
-import Link from "next/link";
 import { notFound } from "next/navigation";
 import { ErrorState } from "@/components/shared/feedback";
-import { PageHeader } from "@/components/shared/page-header";
 import { FormSkeleton } from "@/components/shared/skeletons";
-import { Button } from "@/components/ui/button";
-import { ROUTES } from "@/config/app";
 import { ErrorCodes } from "@/lib/errors/result";
 import { isEditable } from "@/features/invoices/domain/status";
 import { getInvoice } from "@/features/invoices/server/invoice-service";
@@ -42,19 +38,8 @@ async function EditInvoiceContent({ id }: { id: string }) {
 export default async function EditInvoicePage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   return (
-    <div className="space-y-6">
-      <PageHeader
-        title="Edit invoice"
-        description="Changes to issued invoices are versioned and require a reason."
-        actions={
-          <Button asChild variant="ghost">
-            <Link href={ROUTES.invoiceDetail(id)}>Back to invoice</Link>
-          </Button>
-        }
-      />
-      <Suspense fallback={<FormSkeleton />}>
-        <EditInvoiceContent id={id} />
-      </Suspense>
-    </div>
+    <Suspense fallback={<FormSkeleton />}>
+      <EditInvoiceContent id={id} />
+    </Suspense>
   );
 }

@@ -53,11 +53,30 @@ const config: Config = {
           DEFAULT: "hsl(var(--warning))",
           foreground: "hsl(var(--warning-foreground))",
         },
+        subtle: "hsl(var(--surface-subtle))",
+        status: {
+          draft: "hsl(var(--status-draft))",
+          sent: "hsl(var(--status-sent))",
+          viewed: "hsl(var(--status-viewed))",
+          partial: "hsl(var(--status-partial))",
+          paid: "hsl(var(--status-paid))",
+          overdue: "hsl(var(--status-overdue))",
+          cancelled: "hsl(var(--status-cancelled))",
+        },
       },
       borderRadius: {
         lg: "var(--radius)",
         md: "calc(var(--radius) - 2px)",
         sm: "calc(var(--radius) - 4px)",
+        control: "var(--radius-control)",
+        panel: "var(--radius-panel)",
+      },
+      boxShadow: {
+        panel: "var(--shadow-panel)",
+        sticky: "var(--shadow-sticky)",
+      },
+      maxWidth: {
+        page: "1440px",
       },
       fontFamily: {
         sans: ["var(--font-sans)", "ui-sans-serif", "system-ui", "sans-serif"],

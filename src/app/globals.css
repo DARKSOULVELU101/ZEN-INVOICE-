@@ -29,6 +29,18 @@
   --input: 214 32% 88%;
   --ring: 243 75% 59%;
   --radius: 0.65rem;
+  --radius-control: 0.5rem;
+  --radius-panel: 0.75rem;
+  --surface-subtle: 210 33% 97%;
+  --shadow-panel: 0 1px 2px hsl(222 47% 11% / 0.04), 0 8px 24px hsl(222 47% 11% / 0.05);
+  --shadow-sticky: 0 -1px 0 hsl(var(--border)), 0 -12px 32px hsl(222 47% 11% / 0.06);
+  --status-draft: 215 16% 47%;
+  --status-sent: 217 91% 60%;
+  --status-viewed: 190 85% 38%;
+  --status-partial: 32 90% 38%;
+  --status-paid: 152 65% 32%;
+  --status-overdue: 0 72% 51%;
+  --status-cancelled: 215 16% 47%;
 }
 
 .dark {
@@ -53,6 +65,16 @@
   --border: 217 30% 20%;
   --input: 217 30% 24%;
   --ring: 243 80% 68%;
+  --surface-subtle: 217 30% 13%;
+  --shadow-panel: 0 1px 2px hsl(222 47% 2% / 0.24), 0 8px 24px hsl(222 47% 2% / 0.32);
+  --shadow-sticky: 0 -1px 0 hsl(var(--border)), 0 -12px 32px hsl(222 47% 2% / 0.36);
+  --status-draft: 215 16% 65%;
+  --status-sent: 217 91% 72%;
+  --status-viewed: 190 85% 62%;
+  --status-partial: 32 90% 68%;
+  --status-paid: 152 55% 58%;
+  --status-overdue: 0 72% 68%;
+  --status-cancelled: 215 16% 65%;
 }
 
 @layer base {
@@ -60,7 +82,7 @@
     @apply border-border;
   }
   body {
-    @apply bg-background text-foreground;
+    @apply bg-background text-foreground antialiased;
     font-feature-settings: "tnum" 1, "cv11" 1;
   }
   :focus-visible {
@@ -68,9 +90,35 @@
   }
 }
 
+@layer components {
+  .ui-panel {
+    @apply rounded-panel border bg-card text-card-foreground shadow-panel;
+  }
+
+  .ui-section {
+    @apply border-b border-border px-6 py-5 last:border-b-0;
+  }
+
+  .ui-label {
+    @apply text-xs font-medium uppercase tracking-[0.08em] text-muted-foreground;
+  }
+
+  .ui-value {
+    @apply mt-1 text-sm font-medium text-foreground;
+  }
+
+  .ui-money {
+    @apply num text-right font-medium tabular-nums;
+  }
+
+  .ui-divider {
+    @apply h-px w-full bg-border;
+  }
+}
+
 @layer utilities {
   .num {
     font-variant-numeric: tabular-nums;
-    font-family: var(--font-mono);
+    font-feature-settings: "tnum" 1;
   }
 }

@@ -2,11 +2,12 @@ import { Suspense } from "react";
 import Link from "next/link";
 import { Plus } from "lucide-react";
 import { EmptyState, ErrorState } from "@/components/shared/feedback";
-import { PageHeader } from "@/components/shared/page-header";
+import { BreadcrumbTrail, PageShell } from "@/components/shared/page-shell";
 import { TableSkeleton } from "@/components/shared/skeletons";
 import { Button } from "@/components/ui/button";
 import { ROUTES } from "@/config/app";
 import { listInvoices } from "@/features/invoices/server/invoice-service";
+import { listCustomerFilterOptions } from "@/features/invoices/server/form-options";
 import { parseInvoiceListQuery } from "@/features/invoices/schemas/invoice";
 import { InvoiceListClient } from "@/features/invoices/components/list/invoice-list-client";
 
@@ -24,7 +25,10 @@ async function InvoiceResults({ searchParams }: { searchParams: SearchParams }) 
   }
 
   const query = parseInvoiceListQuery(params);
-  const result = await listInvoices(query);
+  const [result, customersResult] = await Promise.all([
+    listInvoices(query),
+    listCustomerFilterOptions(),
+  ]);
 
   if (!result.ok) {
     return <ErrorState description={result.error.message} />;
@@ -53,27 +57,28 @@ async function InvoiceResults({ searchParams }: { searchParams: SearchParams }) 
       query={query}
       total={result.data.total}
       nextCursor={result.data.nextCursor}
+      customers={customersResult.ok ? customersResult.data : []}
     />
   );
 }
 
 export default function InvoicesPage({ searchParams }: { searchParams: SearchParams }) {
   return (
-    <div className="space-y-6">
-      <PageHeader
-        title="Invoices"
-        description="Create, send and track every invoice in one place."
-        actions={
-          <Button asChild>
-            <Link href={ROUTES.invoiceNew}>
-              <Plus aria-hidden="true" /> New invoice
-            </Link>
-          </Button>
-        }
-      />
+    <PageShell
+      title="Invoices"
+      description="Create, send and track every invoice in one place."
+      breadcrumb={<BreadcrumbTrail items={[{ label: "Sales" }, { label: "Invoices" }]} />}
+      actions={
+        <Button asChild>
+          <Link href={ROUTES.invoiceNew}>
+            <Plus aria-hidden="true" /> New invoice
+          </Link>
+        </Button>
+      }
+    >
       <Suspense fallback={<TableSkeleton />}>
         <InvoiceResults searchParams={searchParams} />
       </Suspense>
-    </div>
+    </PageShell>
   );
 }
