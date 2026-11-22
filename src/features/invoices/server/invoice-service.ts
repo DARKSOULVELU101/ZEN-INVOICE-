@@ -15,6 +15,7 @@ import {
 import { APP } from "@/config/app";
 import { formatMoney } from "@/lib/format/format";
 import { isValidEmailAddress, normalizeEmailAddress } from "@/features/email/domain/address";
+import { buildFailedInvoiceOutboxData } from "@/features/email/domain/outbox";
 import { loadEmailConfig } from "@/features/email/server/config";
 import { createEmailProvider } from "@/features/email/server/providers";
 import { requireSession, type Session } from "@/lib/auth/session";
@@ -1317,7 +1318,11 @@ export async function sendInvoice(
       ].join("\u001f"))
       .digest("hex");
 
-    const recordFailure = async (message: string, providerName?: string) => {
+    const recordFailure = async (
+      message: string,
+      providerName?: string,
+      attachmentData: Uint8Array<ArrayBuffer> | null = null,
+    ) => {
       const lastError = message.slice(0, 500);
       try {
         await db.$transaction(async (tx) => {
@@ -1325,10 +1330,7 @@ export async function sendInvoice(
             where: { organizationId: session.organizationId, idempotencyKey },
             select: { id: true },
           });
-          const outboxData = {
-            organizationId: session.organizationId,
-            entityType: EntityType.INVOICE,
-            entityId: id,
+          const outboxData = buildFailedInvoiceOutboxData({
             invoiceId: id,
             toAddress,
             ccAddresses,
@@ -1336,15 +1338,11 @@ export async function sendInvoice(
             subject: email.subject,
             bodyText: email.text,
             bodyHtml: email.html,
-            templateKey: "invoice-delivery-v1",
             attachmentName: `${existing.invoiceNumber}.pdf`,
-            attachmentMimeType: "application/pdf",
-            provider: providerName ?? null,
+            attachmentData,
+            providerName,
             lastError,
-            status: OutboxStatus.FAILED,
-            purpose: "INVOICE_SEND",
-            nextAttemptAt: new Date(),
-          };
+          });
           if (prior) {
             await tx.emailOutbox.update({
               where: { id: prior.id },
@@ -1352,7 +1350,13 @@ export async function sendInvoice(
             });
           } else {
             await tx.emailOutbox.create({
-              data: { ...outboxData, idempotencyKey, attempts: 1, scheduledAt: new Date() },
+              data: {
+                ...outboxData,
+                organizationId: session.organizationId,
+                idempotencyKey,
+                attempts: 1,
+                scheduledAt: new Date(),
+              },
             });
           }
           await tx.invoice.update({
@@ -1378,19 +1382,6 @@ export async function sendInvoice(
       }
     };
 
-    let config;
-    let provider;
-    try {
-      config = loadEmailConfig();
-      provider = createEmailProvider(config);
-    } catch {
-      await recordFailure("Email delivery is not configured.");
-      throw new DomainError(
-        ErrorCodes.EMAIL_CONFIGURATION,
-        "Email delivery is not configured. Contact your administrator.",
-      );
-    }
-
     let pdf: Buffer;
     try {
       pdf = await generateInvoicePdf({
@@ -1398,10 +1389,23 @@ export async function sendInvoice(
         status: nextStatus,
       });
     } catch {
-      await recordFailure("Invoice PDF generation failed.", provider.name);
+      await recordFailure("Invoice PDF generation failed.", undefined, null);
       throw new DomainError(
         ErrorCodes.PDF_GENERATION,
         "The invoice PDF could not be generated. Please try again.",
+      );
+    }
+
+    let config;
+    let provider;
+    try {
+      config = loadEmailConfig();
+      provider = createEmailProvider(config);
+    } catch {
+      await recordFailure("Email delivery is not configured.", undefined, Uint8Array.from(pdf));
+      throw new DomainError(
+        ErrorCodes.EMAIL_CONFIGURATION,
+        "Email delivery is not configured. Contact your administrator.",
       );
     }
 
@@ -1479,7 +1483,7 @@ export async function sendInvoice(
       const sent = await provider.send(message);
       providerMessageId = sent.providerMessageId;
     } catch {
-      await recordFailure("The email provider rejected the message.", provider.name);
+      await recordFailure("The email provider rejected the message.", provider.name, Uint8Array.from(pdf));
       throw new DomainError(
         ErrorCodes.EMAIL_DELIVERY,
         "The invoice email could not be delivered. The invoice was not marked as sent.",

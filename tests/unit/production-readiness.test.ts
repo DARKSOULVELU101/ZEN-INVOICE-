@@ -8,7 +8,10 @@ describe("production database audit", () => {
   it("accepts a database that satisfies the required contract", () => {
     const result = evaluateSchemaAudit({
       columns: [{ table_name: "EmailOutbox", column_name: "idempotencyKey", is_nullable: "NO" }],
-      indexes: ["EmailOutbox_org_idempotency_key"],
+      indexes: [
+        "EmailOutbox_org_idempotency_key",
+        "AuditLog_organizationId_correlationId_key",
+      ],
       constraints: [
         "Invoice_dueDate_not_before_invoiceDate",
         "Invoice_exchange_rate_positive",
@@ -16,7 +19,10 @@ describe("production database audit", () => {
         "Payment_exchange_rate_positive",
         "Payment_base_currency_rate_is_one",
       ],
-      migrations: ["20260107000000_normalize_exchange_rate_direction"],
+      migrations: [
+        "20260107000000_normalize_exchange_rate_direction",
+        "20260108000000_email_delivery_recovery",
+      ],
       pendingMigrations: 0,
       foreignKeys: 20,
     });
@@ -36,8 +42,10 @@ describe("production database audit", () => {
     expect(result.ok).toBe(false);
     expect(result.failures).toContain("EmailOutbox.idempotencyKey must be NOT NULL.");
     expect(result.failures).toContain("EmailOutbox_org_idempotency_key must be unique.");
+    expect(result.failures).toContain("AuditLog_organizationId_correlationId_key must be unique.");
     expect(result.failures).toContain("One or more migrations are pending.");
     expect(result.failures).toContain("Migration 20260107000000_normalize_exchange_rate_direction is not applied.");
+    expect(result.failures).toContain("Migration 20260108000000_email_delivery_recovery is not applied.");
   });
 
   it("fails integrity audit when counts are non-zero", () => {

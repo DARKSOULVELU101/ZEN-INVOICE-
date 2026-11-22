@@ -192,6 +192,7 @@ enum OutboxStatus {
   PROCESSING
   SENT
   FAILED
+  DEAD_LETTER
 }
 
 enum EmailDeliveryStatus {
@@ -829,6 +830,7 @@ model AuditLog {
   correlationId  String?
   createdAt      DateTime     @default(now())
 
+  @@unique([organizationId, correlationId])
   @@index([organizationId, createdAt(sort: Desc)])
   @@index([entityType, entityId, createdAt(sort: Desc)])
   @@index([actorId, createdAt(sort: Desc)])

@@ -60,53 +60,73 @@ export async function POST(request: Request) {
     ? `Email ${event.eventType.toLowerCase()}${event.reason ? `: ${event.reason}` : ""}`
     : "Email delivered";
   const occurredAt = event.timestamp ? new Date(event.timestamp) : new Date();
+  let duplicateInTransaction = false;
 
-  await prisma.$transaction(async (tx) => {
-    for (const outbox of outboxes) {
-      await tx.emailOutbox.update({
-        where: { id: outbox.id },
-        data: failed
-          ? { status: OutboxStatus.FAILED, lastError: detail.slice(0, 500) }
-          : { status: OutboxStatus.SENT, sentAt: occurredAt, lastError: null },
-      });
-
-      if (!outbox.invoiceId) continue;
-      await tx.invoice.update({
-        where: { id: outbox.invoiceId },
-        data: failed
-          ? { emailDeliveryStatus: EmailDeliveryStatus.FAILED, emailLastError: detail.slice(0, 500) }
-          : {
-              emailDeliveryStatus: EmailDeliveryStatus.DELIVERED,
-              emailDeliveredAt: occurredAt,
-              emailLastError: null,
-            },
-      });
-      await tx.invoiceEvent.create({
-        data: {
-          organizationId: outbox.organizationId,
-          invoiceId: outbox.invoiceId,
-          type: failed ? InvoiceEventType.EMAIL_FAILED : InvoiceEventType.SENT,
-          message: detail,
-          metadata: {
-            provider: event.provider,
-            eventType: event.eventType,
-            messageId: event.messageId,
-            recipients: event.recipients,
-          } as Prisma.InputJsonValue,
-        },
-      });
-      await tx.auditLog.create({
-        data: {
-          organizationId: outbox.organizationId,
-          action: AuditAction.UPDATE,
-          entityType: EntityType.INVOICE,
-          entityId: outbox.invoiceId,
-          after: { emailDeliveryStatus: failed ? "FAILED" : "DELIVERED" } as Prisma.InputJsonValue,
+  try {
+    await prisma.$transaction(async (tx) => {
+      const prior = await tx.auditLog.findFirst({
+        where: {
+          organizationId: { in: [...new Set(outboxes.map((entry) => entry.organizationId))] },
           correlationId: event.eventId,
         },
+        select: { id: true },
       });
-    }
-  });
+      if (prior) {
+        duplicateInTransaction = true;
+        return;
+      }
 
-  return NextResponse.json({ status: "accepted" });
+      for (const outbox of outboxes) {
+        await tx.emailOutbox.update({
+          where: { id: outbox.id },
+          data: failed
+            ? { status: OutboxStatus.FAILED, lastError: detail.slice(0, 500) }
+            : { status: OutboxStatus.SENT, sentAt: occurredAt, lastError: null },
+        });
+
+        if (!outbox.invoiceId) continue;
+        await tx.invoice.update({
+          where: { id: outbox.invoiceId },
+          data: failed
+            ? { emailDeliveryStatus: EmailDeliveryStatus.FAILED, emailLastError: detail.slice(0, 500) }
+            : {
+                emailDeliveryStatus: EmailDeliveryStatus.DELIVERED,
+                emailDeliveredAt: occurredAt,
+                emailLastError: null,
+              },
+        });
+        await tx.invoiceEvent.create({
+          data: {
+            organizationId: outbox.organizationId,
+            invoiceId: outbox.invoiceId,
+            type: failed ? InvoiceEventType.EMAIL_FAILED : InvoiceEventType.SENT,
+            message: detail,
+            metadata: {
+              provider: event.provider,
+              eventType: event.eventType,
+              messageId: event.messageId,
+              recipients: event.recipients,
+            } as Prisma.InputJsonValue,
+          },
+        });
+        await tx.auditLog.create({
+          data: {
+            organizationId: outbox.organizationId,
+            action: AuditAction.UPDATE,
+            entityType: EntityType.INVOICE,
+            entityId: outbox.invoiceId,
+            after: { emailDeliveryStatus: failed ? "FAILED" : "DELIVERED" } as Prisma.InputJsonValue,
+            correlationId: event.eventId,
+          },
+        });
+      }
+    });
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+      return NextResponse.json({ status: "duplicate" });
+    }
+    throw error;
+  }
+
+  return NextResponse.json({ status: duplicateInTransaction ? "duplicate" : "accepted" });
 }

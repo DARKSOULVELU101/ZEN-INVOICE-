@@ -27,8 +27,14 @@ export interface IntegrityAuditResult extends AuditEvaluation {
   invariants: Record<string, number>;
 }
 
-const REQUIRED_MIGRATION = "20260107000000_normalize_exchange_rate_direction";
-const REQUIRED_UNIQUE_INDEX = "EmailOutbox_org_idempotency_key";
+const REQUIRED_MIGRATIONS = [
+  "20260107000000_normalize_exchange_rate_direction",
+  "20260108000000_email_delivery_recovery",
+];
+const REQUIRED_UNIQUE_INDEXES = [
+  "EmailOutbox_org_idempotency_key",
+  "AuditLog_organizationId_correlationId_key",
+];
 const REQUIRED_CONSTRAINTS = [
   "Invoice_dueDate_not_before_invoiceDate",
   "Invoice_exchange_rate_positive",
@@ -46,15 +52,17 @@ export function evaluateSchemaAudit(input: SchemaAuditInput): AuditEvaluation {
   if (idempotencyKey && idempotencyKey.is_nullable !== "NO") {
     failures.push("EmailOutbox.idempotencyKey must be NOT NULL.");
   }
-  if (!input.indexes.includes(REQUIRED_UNIQUE_INDEX)) {
-    failures.push(`${REQUIRED_UNIQUE_INDEX} must be unique.`);
+  for (const index of REQUIRED_UNIQUE_INDEXES) {
+    if (!input.indexes.includes(index)) failures.push(`${index} must be unique.`);
   }
   for (const constraint of REQUIRED_CONSTRAINTS) {
     if (!input.constraints.includes(constraint)) failures.push(`Constraint ${constraint} is missing.`);
   }
   if (input.pendingMigrations > 0) failures.push("One or more migrations are pending.");
-  if (!input.migrations.includes(REQUIRED_MIGRATION)) {
-    failures.push(`Migration ${REQUIRED_MIGRATION} is not applied.`);
+  for (const migration of REQUIRED_MIGRATIONS) {
+    if (!input.migrations.includes(migration)) {
+      failures.push(`Migration ${migration} is not applied.`);
+    }
   }
   if (input.foreignKeys < 15) failures.push("Expected database foreign keys are missing.");
   return { ok: failures.length === 0, failures };
