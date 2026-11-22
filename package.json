@@ -18,6 +18,7 @@
     "db:seed:admin": "tsx prisma/seed-admin.ts",
     "preflight": "node scripts/run-with-vercel-env.cjs npx tsx scripts/production-preflight.ts",
     "db:audit": "node scripts/run-with-vercel-env.cjs npx tsx scripts/dependency-audit.ts",
+    "check:schema": "node scripts/run-with-vercel-env.cjs npx tsx scripts/production-schema-audit.ts",
     "db:repair-ledger": "node scripts/run-with-vercel-env.cjs npx tsx prisma/repair-payment-ledger.ts"
   },
   "dependencies": {

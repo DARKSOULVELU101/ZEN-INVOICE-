@@ -3,6 +3,7 @@ import {
   getInvoicePdfStorageStatus,
   verifyInvoicePdfStorage,
 } from "@/features/invoices/server/invoice-storage";
+import { runIntegrityAudit, runSchemaAudit } from "@/lib/health/schema-audit";
 
 export interface ReadinessCheck {
   name: string;
@@ -22,6 +23,14 @@ function hasValue(value: string | undefined): boolean {
 
 function sanitize(value: unknown): string {
   return value instanceof Error ? value.message.slice(0, 300) : "Unexpected error.";
+}
+
+function isHttpsUrl(value: string | undefined): boolean {
+  try {
+    return new URL(value ?? "").protocol === "https:";
+  } catch {
+    return false;
+  }
 }
 
 async function checkDatabase(): Promise<ReadinessCheck> {
@@ -51,6 +60,28 @@ async function checkMigrations(): Promise<ReadinessCheck> {
     return { name: "migrations", ok: true, detail: "All migrations are applied." };
   } catch (error) {
     return { name: "migrations", ok: false, detail: sanitize(error) };
+  }
+}
+
+async function checkSchema(): Promise<ReadinessCheck> {
+  try {
+    const result = await runSchemaAudit(prisma);
+    return result.ok
+      ? { name: "schema", ok: true, detail: "Database contract is satisfied." }
+      : { name: "schema", ok: false, detail: result.failures.join(" | ") };
+  } catch (error) {
+    return { name: "schema", ok: false, detail: sanitize(error) };
+  }
+}
+
+async function checkIntegrity(): Promise<ReadinessCheck> {
+  try {
+    const result = await runIntegrityAudit(prisma);
+    return result.ok
+      ? { name: "integrity", ok: true, detail: "Database relationships and invariants are clean." }
+      : { name: "integrity", ok: false, detail: result.failures.join(" | ") };
+  } catch (error) {
+    return { name: "integrity", ok: false, detail: sanitize(error) };
   }
 }
 
@@ -116,8 +147,10 @@ async function checkEmail(): Promise<ReadinessCheck> {
     if (!apiUrl || !token) {
       return { name: "email", ok: false, detail: "EMAIL_API_URL and EMAIL_API_TOKEN are required." };
     }
+    if (!isHttpsUrl(apiUrl)) {
+      return { name: "email", ok: false, detail: "EMAIL_API_URL must use HTTPS." };
+    }
     try {
-      new URL(apiUrl);
       const response = await fetch(`${apiUrl}/health`, {
         headers: { "X-Email-Api-Token": token },
         signal: AbortSignal.timeout(10_000),
@@ -132,10 +165,21 @@ async function checkEmail(): Promise<ReadinessCheck> {
     }
   }
 
+  const staticCredentials = hasValue(process.env.AWS_ACCESS_KEY_ID)
+    && hasValue(process.env.AWS_SECRET_ACCESS_KEY);
+  const roleCredentials = hasValue(process.env.AWS_ROLE_ARN)
+    || hasValue(process.env.AWS_WEB_IDENTITY_TOKEN_FILE)
+    || hasValue(process.env.AWS_CONTAINER_CREDENTIALS_RELATIVE_URI);
+  if (!staticCredentials && !roleCredentials) {
+    return { name: "email", ok: false, detail: "Direct SES requires AWS credentials or an IAM role." };
+  }
   return { name: "email", ok: true, detail: "Direct SES configuration is complete." };
 }
 
 async function checkStorage(): Promise<ReadinessCheck> {
+  if (process.env.SUPABASE_URL && !isHttpsUrl(process.env.SUPABASE_URL)) {
+    return { name: "storage", ok: false, detail: "SUPABASE_URL must use HTTPS." };
+  }
   const status = getInvoicePdfStorageStatus();
   if (!status.configured) {
     return { name: "storage", ok: false, detail: "No PDF storage provider is configured." };
@@ -163,6 +207,8 @@ export async function runProductionReadinessChecks(): Promise<ReadinessReport> {
   const checks = await Promise.all([
     checkDatabase(),
     checkMigrations(),
+    checkSchema(),
+    checkIntegrity(),
     checkAuth(),
     checkEmail(),
     checkStorage(),
