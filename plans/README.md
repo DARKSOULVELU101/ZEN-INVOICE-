@@ -12,7 +12,7 @@ The reverse-engineering map and full health report are in `plans/00-current-syst
 - Migrations `20260107000000_normalize_exchange_rate_direction`, `20260108000000_email_delivery_recovery`, and `20260109000000_auth_workflow_guards`: **PENDING**
 - Hosted data integrity: **CLEAN**
 - Production readiness preflight: **40%**, intentionally failing on auth/email/storage and pending migrations
-- Verification gates: typecheck, lint, 56 tests, build, PDF trace check, and `git diff --check` pass
+- Verification gates: typecheck, lint, 61 tests, coverage thresholds, build, PDF trace check, production audit with approved waiver, E2E, Python email tests, and `git diff --check` pass
 
 ## Execution order and status
 
@@ -23,7 +23,7 @@ The reverse-engineering map and full health report are in `plans/00-current-syst
 | 003 | Repair email delivery recovery and status integrity | P1 | L | 001, 002 | DONE |
 | 004 | Normalize currency conversion semantics | P0 | L | none | DONE |
 | 005 | Harden authentication, authorization, and workflow boundaries | P1 | L | 001 | DONE |
-| 006 | Add CI enforcement, regression protection, and dependency governance | P1 | L | 001-005 | TODO |
+| 006 | Add CI enforcement, regression protection, and dependency governance | P1 | L | 001-005 | DONE |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED | REJECTED.
 
