@@ -3,8 +3,23 @@ import { timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/db/client";
+import {
+  isTrustedSnsCertificateUrl,
+  verifySnsEnvelope,
+} from "@/features/email/server/sns";
 
 export const dynamic = "force-dynamic";
+
+const snsSchema = z.object({
+  Type: z.literal("Notification"),
+  MessageId: z.string().min(1),
+  TopicArn: z.string().min(1),
+  Message: z.string().min(1),
+  Timestamp: z.string().min(1),
+  Signature: z.string().min(1),
+  SignatureVersion: z.literal("1"),
+  SigningCertURL: z.string().min(1),
+});
 
 const eventSchema = z.object({
   provider: z.literal("SES"),
@@ -14,6 +29,7 @@ const eventSchema = z.object({
   recipients: z.array(z.string()).default([]),
   timestamp: z.string().optional(),
   reason: z.string().optional(),
+  sns: snsSchema,
 });
 
 function requireToken(request: Request): boolean {
@@ -35,6 +51,28 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Invalid event payload." }, { status: 400 });
   }
   const event = parsed.data;
+
+  if (!isTrustedSnsCertificateUrl(event.sns.SigningCertURL)) {
+    return NextResponse.json({ error: "Invalid SNS signing certificate." }, { status: 400 });
+  }
+  if (event.sns.MessageId !== event.eventId) {
+    return NextResponse.json({ error: "SNS event identifier mismatch." }, { status: 400 });
+  }
+
+  const certificateResponse = await fetch(event.sns.SigningCertURL, {
+    signal: AbortSignal.timeout(15_000),
+    cache: "no-store",
+  });
+  if (!certificateResponse.ok) {
+    return NextResponse.json({ error: "Could not load SNS signing certificate." }, { status: 400 });
+  }
+  if (!verifySnsEnvelope(
+    event.sns,
+    await certificateResponse.text(),
+    process.env.SES_SNS_TOPIC_ARN ?? "",
+  )) {
+    return NextResponse.json({ error: "Invalid SNS signature or topic." }, { status: 401 });
+  }
 
   const outboxes = await prisma.emailOutbox.findMany({
     where: { provider: "SES", providerMessageId: event.messageId },

@@ -30,6 +30,7 @@ export interface IntegrityAuditResult extends AuditEvaluation {
 const REQUIRED_MIGRATIONS = [
   "20260107000000_normalize_exchange_rate_direction",
   "20260108000000_email_delivery_recovery",
+  "20260109000000_auth_workflow_guards",
 ];
 const REQUIRED_UNIQUE_INDEXES = [
   "EmailOutbox_org_idempotency_key",

@@ -7,7 +7,8 @@ import {
   BarChart3, Building2, CreditCard, FileText, LayoutDashboard,
   Package, Users,
 } from "lucide-react";
-import { NAV_ITEMS, type NavItem } from "@/config/navigation";
+import { navItemsForPermissions, type NavItem } from "@/config/navigation";
+import type { PermissionKey } from "@/config/permissions";
 import { cn } from "@/lib/utils";
 
 const ICONS: Record<NavItem["icon"], React.ComponentType<{ className?: string }>> = {
@@ -19,13 +20,20 @@ const ICONS: Record<NavItem["icon"], React.ComponentType<{ className?: string }>
   reports: BarChart3,
 };
 
-export function PlatformNav({ variant }: { variant: "sidebar" | "mobile" }) {
+export function PlatformNav({
+  variant,
+  permissions = [],
+}: {
+  variant: "sidebar" | "mobile";
+  permissions?: readonly PermissionKey[];
+}) {
   const pathname = usePathname();
   const showLabel = variant === "sidebar";
+  const items = navItemsForPermissions(permissions);
 
   return (
     <nav aria-label={variant === "sidebar" ? "Main navigation" : "Mobile navigation"} className="flex-1 space-y-1">
-      {NAV_ITEMS.map((item) => {
+      {items.map((item) => {
         const Icon = ICONS[item.icon];
         const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
         const classes = cn(

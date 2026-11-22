@@ -6,6 +6,7 @@ import {
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { DomainError, ErrorCodes } from "@/lib/errors/result";
+import { requireHttpsUrl } from "@/lib/security/urls";
 
 type StorageProvider = "S3" | "SUPABASE";
 
@@ -23,16 +24,18 @@ const primary = process.env.PDF_STORAGE_PRIMARY?.trim().toUpperCase() === "SUPAB
 let s3Client: S3Client | undefined;
 
 function supabaseConfig(): SupabaseConfig | null {
-  const url = process.env.SUPABASE_URL?.trim().replace(/\/+$/, "");
+  const rawUrl = process.env.SUPABASE_URL?.trim().replace(/\/+$/, "");
   const supabaseBucket = process.env.SUPABASE_STORAGE_BUCKET?.trim();
   const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim();
-  if (!url || !supabaseBucket || !serviceRoleKey) return null;
+  if (!rawUrl || !supabaseBucket || !serviceRoleKey) return null;
   try {
-    new URL(url);
+    const url = process.env.NODE_ENV === "production"
+      ? requireHttpsUrl(rawUrl, "SUPABASE_URL")
+      : new URL(rawUrl).toString().replace(/\/+$/, "");
+    return { url, bucket: supabaseBucket, serviceRoleKey };
   } catch {
     return null;
   }
-  return { url, bucket: supabaseBucket, serviceRoleKey };
 }
 
 function s3Configured(): boolean {

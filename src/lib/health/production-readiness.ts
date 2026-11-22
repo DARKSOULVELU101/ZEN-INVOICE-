@@ -140,6 +140,9 @@ async function checkEmail(): Promise<ReadinessCheck> {
       detail: "EMAIL_EVENT_WEBHOOK_TOKEN and CRON_SECRET are required.",
     };
   }
+  if (!hasValue(process.env.SES_SNS_TOPIC_ARN)) {
+    return { name: "email", ok: false, detail: "SES_SNS_TOPIC_ARN is required." };
+  }
 
   if (provider === "EMAIL_API") {
     const apiUrl = process.env.EMAIL_API_URL?.trim().replace(/\/+$/, "");

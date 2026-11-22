@@ -16,3 +16,9 @@ export const NAV_ITEMS: readonly NavItem[] = [
   { label: "Payments", href: "/payments", icon: "payments", permission: "payment:record", available: true },
   { label: "Reports", href: "/reports", icon: "reports", permission: "report:view", available: true },
 ] as const;
+
+export function navItemsForPermissions(permissions: readonly PermissionKey[]): readonly NavItem[] {
+  return NAV_ITEMS.filter(
+    (item) => item.available && (!item.permission || permissions.includes(item.permission)),
+  );
+}

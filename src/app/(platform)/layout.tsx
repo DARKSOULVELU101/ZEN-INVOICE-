@@ -28,7 +28,7 @@ export default async function PlatformLayout({ children }: { children: React.Rea
         <OrganizationBadge name={session.organizationName} />
 
         <div className="mt-6">
-          <PlatformNav variant="sidebar" />
+          <PlatformNav variant="sidebar" permissions={session.permissions} />
         </div>
 
         <div className="mt-auto border-t pt-4">
@@ -59,7 +59,7 @@ export default async function PlatformLayout({ children }: { children: React.Rea
         </header>
 
         <nav aria-label="Mobile navigation" className="sticky top-14 z-20 flex gap-1 overflow-x-auto border-b bg-card px-3 py-2 lg:hidden">
-          <PlatformNav variant="mobile" />
+          <PlatformNav variant="mobile" permissions={session.permissions} />
         </nav>
 
         <main className="mx-auto w-full max-w-page flex-1 px-4 pb-12 pt-6 sm:px-6 sm:pt-8 lg:px-8">

@@ -1,3 +1,4 @@
+import { requireHttpsUrl } from "@/lib/security/urls";
 import { isValidEmailAddress, normalizeEmailAddress, parseAddressList } from "../domain/address";
 import { EMAIL_PROVIDERS, type EmailProviderName } from "../types/email";
 
@@ -27,12 +28,7 @@ export function loadEmailConfig(env: Record<string, string | undefined> = proces
   const provider = rawProvider as EmailProviderName;
 
   if (provider === "EMAIL_API") {
-    const apiUrl = required(env, "EMAIL_API_URL");
-    try {
-      new URL(apiUrl);
-    } catch {
-      throw new Error("EMAIL_API_URL must be a valid URL.");
-    }
+    const apiUrl = requireHttpsUrl(required(env, "EMAIL_API_URL"), "EMAIL_API_URL");
     return {
       provider,
       apiUrl: apiUrl.replace(/\/+$/, ""),

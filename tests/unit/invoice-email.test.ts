@@ -19,7 +19,9 @@ describe("invoice delivery primitives", () => {
       .toThrow(/AWS_REGION/);
     expect(() => loadEmailConfig({ EMAIL_PROVIDER: "EMAIL_API" })).toThrow(/EMAIL_API_URL/);
     expect(() => loadEmailConfig({ EMAIL_PROVIDER: "EMAIL_API", EMAIL_API_URL: "not-a-url" }))
-      .toThrow(/valid URL/);
+      .toThrow(/must use HTTPS/);
+    expect(() => loadEmailConfig({ EMAIL_PROVIDER: "EMAIL_API", EMAIL_API_URL: "http://email.example.com" }))
+      .toThrow(/must use HTTPS/);
     expect(loadEmailConfig({
       EMAIL_PROVIDER: "EMAIL_API",
       EMAIL_API_URL: "https://email.example.com",

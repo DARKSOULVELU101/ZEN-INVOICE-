@@ -12,6 +12,7 @@ export interface SessionUser {
 }
 
 export interface Session {
+  sessionId: string;
   user: SessionUser;
   organizationId: string;
   organizationName: string;
@@ -23,8 +24,24 @@ export const getSession = cache(async (): Promise<Session | null> => {
   if (process.env.AUTH_MODE !== "production") return null;
 
   const cookieStore = await cookies();
-  const payload = verifySessionToken(cookieStore.get(SESSION_COOKIE)?.value);
+  const payload = await verifySessionToken(cookieStore.get(SESSION_COOKIE)?.value);
   if (!payload) return null;
+
+  const sessionRecord = await prisma.userSession.findUnique({
+    where: { id: payload.sessionId },
+    select: { userId: true, membershipId: true, expiresAt: true, revokedAt: true },
+  });
+  const now = new Date();
+  if (
+    !sessionRecord
+    || sessionRecord.revokedAt
+    || sessionRecord.userId !== payload.userId
+    || sessionRecord.membershipId !== payload.membershipId
+    || sessionRecord.expiresAt.getTime() !== payload.expiresAt
+    || sessionRecord.expiresAt <= now
+  ) {
+    return null;
+  }
 
   const user = await prisma.user.findFirst({
     where: { id: payload.userId, status: "ACTIVE", deletedAt: null },
@@ -79,6 +96,7 @@ export const getSession = cache(async (): Promise<Session | null> => {
   }
 
   return {
+    sessionId: payload.sessionId,
     user: { id: user.id, name: user.name, email: user.email },
     organizationId: membership.organizationId,
     organizationName: membership.organization.name,

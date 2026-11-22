@@ -181,7 +181,9 @@ enum AuditAction {
   CANCEL
   PAYMENT_RECORD
   LOGIN
+  LOGIN_FAILED
   LOGOUT
+  LOCKOUT
   PERMISSION_CHANGE
   EXPORT
   PRINT
@@ -316,8 +318,30 @@ model User {
   invoiceEvents       InvoiceEvent[]           @relation("InvoiceEventActor")
   auditLogs           AuditLog[]
   attachments         Attachment[]
+  sessions            UserSession[]
 
   @@index([status])
+}
+
+model UserSession {
+  id           String    @id @db.Uuid
+  userId       String    @db.Uuid
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  membershipId String    @db.Uuid
+  expiresAt    DateTime
+  revokedAt    DateTime?
+  createdAt    DateTime  @default(now())
+
+  @@index([userId, revokedAt])
+  @@index([expiresAt])
+}
+
+model AuthRateLimit {
+  key            String    @id @db.VarChar(64)
+  failures       Int       @default(0)
+  firstFailureAt DateTime  @default(now())
+  lockedUntil    DateTime?
+  updatedAt      DateTime  @updatedAt
 }
 
 model OrganizationMembership {

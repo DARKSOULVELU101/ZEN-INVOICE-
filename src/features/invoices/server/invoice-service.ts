@@ -1504,8 +1504,8 @@ export async function sendInvoice(
           lastError: null,
         },
       });
-      await tx.invoice.update({
-        where: { id },
+      const claimed = await tx.invoice.updateMany({
+        where: { id, status: existing.status, version: existing.version },
         data: {
           status: nextStatus,
           searchText: refreshedSearchText(existing, { status: nextStatus }),
@@ -1520,6 +1520,9 @@ export async function sendInvoice(
           ...(action === "SEND" ? { version: { increment: 1 } } : {}),
         },
       });
+      if (claimed.count !== 1) {
+        throw new ConflictError("Invoice changed while it was being sent. Reload and try again.");
+      }
       await tx.invoiceEvent.create({
         data: {
           organizationId: session.organizationId,
@@ -1560,8 +1563,8 @@ export async function markInvoiceViewed(id: string): Promise<Result<{ status: Db
     const nextStatus = transition(existing.status, "VIEW");
 
     await db.$transaction(async (tx) => {
-      await tx.invoice.update({
-        where: { id },
+      const claimed = await tx.invoice.updateMany({
+        where: { id, status: existing.status, version: existing.version },
         data: {
           status: nextStatus,
           searchText: refreshedSearchText(existing, { status: nextStatus }),
@@ -1570,6 +1573,9 @@ export async function markInvoiceViewed(id: string): Promise<Result<{ status: Db
           version: { increment: 1 },
         },
       });
+      if (claimed.count !== 1) {
+        throw new ConflictError("Invoice changed while it was being viewed. Reload and try again.");
+      }
       await tx.invoiceEvent.create({
         data: {
           organizationId: session.organizationId,
@@ -1611,8 +1617,8 @@ export async function cancelInvoice(id: string, reason: string): Promise<Result<
     }
 
     await db.$transaction(async (tx) => {
-      await tx.invoice.update({
-        where: { id },
+      const claimed = await tx.invoice.updateMany({
+        where: { id, status: existing.status, version: existing.version },
         data: {
           status: nextStatus,
           searchText: refreshedSearchText(existing, { status: nextStatus }),
@@ -1621,6 +1627,9 @@ export async function cancelInvoice(id: string, reason: string): Promise<Result<
           version: { increment: 1 },
         },
       });
+      if (claimed.count !== 1) {
+        throw new ConflictError("Invoice changed while it was being cancelled. Reload and try again.");
+      }
       await tx.invoiceEvent.create({
         data: {
           organizationId: session.organizationId,
@@ -1805,6 +1814,7 @@ export async function recordPayment(input: RecordPaymentInput): Promise<Result<{
         exchangeRate: string;
         total: string;
         status: DbInvoiceStatus;
+        version: number;
       }[]>`
         SELECT
           id,
@@ -1813,7 +1823,8 @@ export async function recordPayment(input: RecordPaymentInput): Promise<Result<{
           "base_currency_code"::text AS "baseCurrencyCode",
           "exchange_rate"::text AS "exchangeRate",
           total::text AS total,
-          status
+          status,
+          version
         FROM "Invoice"
         WHERE id = ${existing.id}::uuid AND "organization_id" = ${session.organizationId}::uuid
         FOR UPDATE
@@ -1866,8 +1877,8 @@ export async function recordPayment(input: RecordPaymentInput): Promise<Result<{
         },
       });
 
-      await tx.invoice.update({
-        where: { id: row.id },
+      const claimed = await tx.invoice.updateMany({
+        where: { id: row.id, status: row.status, version: row.version },
         data: {
           amountPaid: finalAmountPaid,
           balanceDue: finalBalanceDue,
@@ -1876,6 +1887,9 @@ export async function recordPayment(input: RecordPaymentInput): Promise<Result<{
           version: { increment: 1 },
         },
       });
+      if (claimed.count !== 1) {
+        throw new ConflictError("Invoice changed while the payment was being recorded. Reload and try again.");
+      }
       await tx.invoiceEvent.create({
         data: {
           organizationId: session.organizationId,

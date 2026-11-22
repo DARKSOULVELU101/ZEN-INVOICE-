@@ -35,6 +35,10 @@ function addCalendarDays(value: string, days: number): Date {
 }
 
 async function main() {
+  if (process.env.NODE_ENV === "production") {
+    throw new Error("Demo seed is disabled in production. Use db:seed:admin instead.");
+  }
+
   await prisma.organization.upsert({
     where: { id: ORGANIZATION_ID },
     create: {

@@ -22,6 +22,7 @@ describe("production database audit", () => {
       migrations: [
         "20260107000000_normalize_exchange_rate_direction",
         "20260108000000_email_delivery_recovery",
+        "20260109000000_auth_workflow_guards",
       ],
       pendingMigrations: 0,
       foreignKeys: 20,
@@ -46,6 +47,7 @@ describe("production database audit", () => {
     expect(result.failures).toContain("One or more migrations are pending.");
     expect(result.failures).toContain("Migration 20260107000000_normalize_exchange_rate_direction is not applied.");
     expect(result.failures).toContain("Migration 20260108000000_email_delivery_recovery is not applied.");
+    expect(result.failures).toContain("Migration 20260109000000_auth_workflow_guards is not applied.");
   });
 
   it("fails integrity audit when counts are non-zero", () => {
