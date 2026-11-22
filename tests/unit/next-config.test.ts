@@ -18,6 +18,7 @@ describe("Next.js production packaging", () => {
     expect(includes).toEqual(
       expect.arrayContaining([
         "./node_modules/@react-pdf/font/node_modules/pdfkit/js/standard-fonts/**/*",
+        "./node_modules/@react-pdf/renderer/node_modules/pdfkit/js/standard-fonts/**/*",
         "./node_modules/pdfkit/js/standard-fonts/**/*",
       ]),
     );
