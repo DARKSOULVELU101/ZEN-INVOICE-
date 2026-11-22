@@ -37,6 +37,7 @@ import {
   toDbDecimal,
   type DecimalInput,
 } from "@/lib/money/decimal";
+import { convertDocumentAmountToBase } from "@/lib/money/currency";
 import {
   deriveInvoiceDates,
   parseCalendarDate,
@@ -754,8 +755,8 @@ export async function createInvoice(input: InvoiceFormOutput): Promise<Result<In
     const exchangeRate = await resolveExchangeRate(
       db,
       session.organizationId,
-      baseCurrencyCode,
       input.currencyCode,
+      baseCurrencyCode,
       dates.invoiceDate,
     );
 
@@ -882,8 +883,8 @@ export async function updateInvoice(
       ? await resolveExchangeRate(
           db,
           session.organizationId,
-          settings.currency,
           input.currencyCode,
+          settings.currency,
           dates.invoiceDate,
         )
       : new Decimal(existing.exchangeRate.toString());
@@ -1849,7 +1850,7 @@ export async function recordPayment(input: RecordPaymentInput): Promise<Result<{
           currencyCode: row.currencyCode as CurrencyCode,
           baseCurrencyCode: row.baseCurrencyCode as CurrencyCode,
           exchangeRate,
-          amountInBaseCurrency: roundMoney(amount.times(exchangeRate)),
+          amountInBaseCurrency: convertDocumentAmountToBase(amount, exchangeRate),
           paidAt: input.paidAt,
           method: input.method ?? PaymentMethod.OTHER,
           reference: input.reference ?? null,

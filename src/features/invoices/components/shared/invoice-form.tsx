@@ -183,12 +183,16 @@ export function InvoiceForm({
       const base = options.currencyCode;
       const fromToBase = options.exchangeRates.find((rate) => rate.fromCurrencyCode === from && rate.toCurrencyCode === base);
       const baseToTarget = options.exchangeRates.find((rate) => rate.fromCurrencyCode === base && rate.toCurrencyCode === to);
-      if (fromToBase && baseToTarget && base !== from) {
-        return roundMoney(new Decimal(amount).div(fromToBase.rate).times(baseToTarget.rate)).toString();
+      if (fromToBase && baseToTarget) {
+        return roundMoney(new Decimal(amount).times(fromToBase.rate).times(baseToTarget.rate)).toString();
       }
+      setError("currencyCode", {
+        type: "manual",
+        message: `No exchange rate is configured for ${from} to ${to}.`,
+      });
       return moneyString(amount);
     },
-    [options.currencyCode, options.exchangeRates],
+    [options.currencyCode, options.exchangeRates, setError],
   );
 
   const applyCurrency = React.useCallback(

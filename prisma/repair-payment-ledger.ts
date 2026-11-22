@@ -1,5 +1,6 @@
 import "dotenv/config";
 import { PrismaClient } from "@prisma/client";
+import { convertDocumentAmountToBase } from "../src/lib/money/currency";
 
 const prisma = new PrismaClient();
 
@@ -44,7 +45,10 @@ async function main() {
             currencyCode: invoice.currencyCode,
             baseCurrencyCode: invoice.baseCurrencyCode,
             exchangeRate: invoice.exchangeRate,
-            amountInBaseCurrency: invoice.amountPaid.mul(invoice.exchangeRate),
+            amountInBaseCurrency: convertDocumentAmountToBase(
+              invoice.amountPaid.toString(),
+              invoice.exchangeRate.toString(),
+            ).toString(),
             paidAt: invoice.issueDate,
             method: "BANK_TRANSFER",
             status: "COMPLETED",

@@ -2,7 +2,8 @@ import { PaymentStatus, Prisma, ReportType } from "@prisma/client";
 import { APP } from "@/config/app";
 import { requireSession } from "@/lib/auth/session";
 import { getTenantDb } from "@/lib/db/tenant";
-import { DomainError, ErrorCodes, toResultAsync, type Result } from "@/lib/errors/result";
+import { toResultAsync, type Result } from "@/lib/errors/result";
+import { convertDocumentAmountToBase } from "@/lib/money/currency";
 import { Decimal, roundMoney } from "@/lib/money/decimal";
 import { requirePermission } from "@/lib/rbac/guard";
 import { toCalendarDateInput } from "@/features/invoices/domain/dates";
@@ -57,11 +58,7 @@ const invoiceReportSelect = {
 } satisfies Prisma.InvoiceSelect;
 
 function money(value: Prisma.Decimal, rate: Prisma.Decimal): Decimal {
-  const multiplier = new Decimal(rate.toString());
-  if (!multiplier.gt(0)) {
-    throw new DomainError(ErrorCodes.INVARIANT, "A stored invoice exchange rate is invalid.");
-  }
-  return roundMoney(new Decimal(value.toString()).times(multiplier));
+  return convertDocumentAmountToBase(value.toString(), rate.toString());
 }
 
 function monthKey(date: Date): string {
@@ -216,14 +213,9 @@ export async function getReport(query: ReportQuery): Promise<Result<ReportResult
     const db = await getTenantDb();
     const organization = await db.organization.findUnique({
       where: { id: session.organizationId },
-      select: {
-        baseCurrencyCode: true,
-        settings: { select: { defaultCurrencyCode: true } },
-      },
+      select: { baseCurrencyCode: true },
     });
-    const currency = organization?.settings?.defaultCurrencyCode
-      ?? organization?.baseCurrencyCode
-      ?? APP.defaultCurrency;
+    const currency = organization?.baseCurrencyCode ?? APP.defaultCurrency;
 
     const where: Prisma.InvoiceWhereInput = {
       organizationId: session.organizationId,
