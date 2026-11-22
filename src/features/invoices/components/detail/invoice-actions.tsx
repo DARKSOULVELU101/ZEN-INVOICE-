@@ -3,7 +3,7 @@
 import * as React from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { Copy, Pencil, Send, Wallet } from "lucide-react";
+import { Copy, Eye, Pencil, Send, Wallet } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -23,10 +23,15 @@ import { todayCalendarDate } from "../../domain/dates";
 import type { InvoiceDetail } from "../../types/invoice";
 import {
   cancelInvoiceAction, deleteInvoiceAction, duplicateInvoiceAction,
-  recordPaymentAction, sendInvoiceAction,
+  markInvoiceViewedAction, recordPaymentAction, resendInvoiceAction, sendInvoiceAction,
 } from "../../actions/invoice-actions";
 
-type DialogName = "send" | "cancel" | "delete" | "payment" | null;
+type DialogName = "send" | "resend" | "cancel" | "delete" | "payment" | null;
+
+interface ActionResult {
+  ok: boolean;
+  error?: { message: string };
+}
 
 export function InvoiceActions({ invoice }: { invoice: InvoiceDetail }) {
   const router = useRouter();
@@ -39,22 +44,25 @@ export function InvoiceActions({ invoice }: { invoice: InvoiceDetail }) {
   const [reference, setReference] = React.useState("");
 
   const canSend = invoice.status === "DRAFT";
+  const canResend = ["SENT", "VIEWED", "PARTIALLY_PAID"].includes(invoice.status);
+  const canMarkViewed = invoice.status === "SENT";
   const canEdit = ["DRAFT", "SENT", "VIEWED", "PARTIALLY_PAID"].includes(invoice.status);
   const canDelete = invoice.status === "DRAFT";
   const canPay = ["SENT", "VIEWED", "PARTIALLY_PAID"].includes(invoice.status);
   const canCancel = ["SENT", "VIEWED", "PARTIALLY_PAID"].includes(invoice.status);
+  const recipient = invoice.customerEmail ?? "the customer";
 
   const close = () => {
     setDialog(null);
     setReason("");
   };
 
-  const run = async (action: () => Promise<{ ok: boolean; error?: { message: string } }>) => {
+  const run = async (action: () => Promise<ActionResult>, successMessage: string) => {
     setPending(true);
     const result = await action();
     setPending(false);
     if (result.ok) {
-      toast.success("Done");
+      toast.success(successMessage);
       close();
       router.refresh();
     } else {
@@ -62,28 +70,34 @@ export function InvoiceActions({ invoice }: { invoice: InvoiceDetail }) {
     }
   };
 
-  const primary = canPay
-    ? { label: "Record payment", icon: Wallet, onSelect: () => setDialog("payment") }
-    : canSend
-      ? { label: "Send invoice", icon: Send, onSelect: () => setDialog("send") }
-      : canEdit
-        ? { label: "Edit invoice", icon: Pencil, onSelect: () => router.push(ROUTES.invoiceEdit(invoice.id)) }
-        : { label: "Duplicate", icon: Copy, onSelect: () => void run(() => duplicateInvoiceAction(invoice.id)) };
+  const primary = canSend
+    ? { label: "Send invoice", icon: Send, onSelect: () => setDialog("send") }
+    : canResend
+      ? { label: "Resend invoice", icon: Send, onSelect: () => setDialog("resend") }
+      : canPay
+        ? { label: "Record payment", icon: Wallet, onSelect: () => setDialog("payment") }
+        : canEdit
+          ? { label: "Edit invoice", icon: Pencil, onSelect: () => router.push(ROUTES.invoiceEdit(invoice.id)) }
+          : { label: "Duplicate", icon: Copy, onSelect: () => void run(() => duplicateInvoiceAction(invoice.id), "Invoice duplicated") };
+
+  const secondary = canSend
+    ? { label: "Save draft", icon: Pencil, onSelect: () => router.push(ROUTES.invoiceEdit(invoice.id)) }
+    : canMarkViewed
+      ? { label: "Mark as viewed", icon: Eye, onSelect: () => void run(() => markInvoiceViewedAction(invoice.id), "Invoice marked as viewed") }
+      : null;
 
   const PrimaryIcon = primary.icon;
+  const SecondaryIcon = secondary?.icon;
 
   const actions: MenuAction[] = [];
-  if (canEdit && primary.label !== "Edit invoice") {
+  if (canEdit && primary.label !== "Edit invoice" && secondary?.label !== "Save draft") {
     actions.push({ label: "Edit", onSelect: () => router.push(ROUTES.invoiceEdit(invoice.id)) });
-  }
-  if (canSend && primary.label !== "Send invoice") {
-    actions.push({ label: "Send", onSelect: () => setDialog("send") });
   }
   if (canPay && primary.label !== "Record payment") {
     actions.push({ label: "Record payment", onSelect: () => setDialog("payment") });
   }
   if (primary.label !== "Duplicate") {
-    actions.push({ label: "Duplicate", onSelect: () => void run(() => duplicateInvoiceAction(invoice.id)) });
+    actions.push({ label: "Duplicate", onSelect: () => void run(() => duplicateInvoiceAction(invoice.id), "Invoice duplicated") });
   }
   if (canCancel) {
     actions.push({ label: "Cancel invoice", onSelect: () => setDialog("cancel"), destructive: true });
@@ -92,9 +106,17 @@ export function InvoiceActions({ invoice }: { invoice: InvoiceDetail }) {
     actions.push({ label: "Delete draft", onSelect: () => setDialog("delete"), destructive: true });
   }
 
+  const sendDialogOpen = dialog === "send" || dialog === "resend";
+
   return (
     <>
       <div className="flex flex-wrap items-center justify-end gap-2">
+        {secondary && SecondaryIcon ? (
+          <Button variant="outline" onClick={secondary.onSelect} disabled={pending}>
+            <SecondaryIcon aria-hidden="true" />
+            {secondary.label}
+          </Button>
+        ) : null}
         <Button onClick={primary.onSelect} disabled={pending}>
           <PrimaryIcon aria-hidden="true" />
           {primary.label}
@@ -103,14 +125,19 @@ export function InvoiceActions({ invoice }: { invoice: InvoiceDetail }) {
       </div>
 
       <ConfirmDialog
-        open={dialog === "send"}
+        open={sendDialogOpen}
         onOpenChange={(open) => !open && close()}
-        title={`Send ${invoice.invoiceNumber}?`}
-        description={`An email will be queued for ${invoice.customerEmail ?? "the customer"}. The invoice status will change to Sent.`}
-        confirmLabel="Send invoice"
+        title={`${dialog === "resend" ? "Resend" : "Send"} ${invoice.invoiceNumber}?`}
+        description={`A professional PDF invoice will be emailed to ${recipient}. ${dialog === "resend" ? "The delivery timestamp will be refreshed." : "The invoice status will change to Sent after delivery."}`}
+        confirmLabel={dialog === "resend" ? "Resend invoice" : "Send invoice"}
         intent="primary"
         pending={pending}
-        onConfirm={() => void run(() => sendInvoiceAction(invoice.id))}
+        onConfirm={() => void run(
+          dialog === "resend"
+            ? () => resendInvoiceAction(invoice.id)
+            : () => sendInvoiceAction(invoice.id),
+          dialog === "resend" ? "Invoice resent with PDF" : "Invoice sent with PDF",
+        )}
       />
 
       <ConfirmDialog
@@ -120,7 +147,7 @@ export function InvoiceActions({ invoice }: { invoice: InvoiceDetail }) {
         description="This draft will be hidden from all lists. This cannot be undone."
         confirmLabel="Delete draft"
         pending={pending}
-        onConfirm={() => void run(() => deleteInvoiceAction(invoice.id))}
+        onConfirm={() => void run(() => deleteInvoiceAction(invoice.id), "Draft deleted")}
       />
 
       <Dialog open={dialog === "cancel"} onOpenChange={(open) => !open && close()}>
@@ -142,7 +169,7 @@ export function InvoiceActions({ invoice }: { invoice: InvoiceDetail }) {
             <Button
               variant="destructive"
               disabled={pending || reason.trim().length < 3}
-              onClick={() => void run(() => cancelInvoiceAction(invoice.id, reason))}
+              onClick={() => void run(() => cancelInvoiceAction(invoice.id, reason), "Invoice cancelled")}
             >
               Cancel invoice
             </Button>
@@ -204,6 +231,7 @@ export function InvoiceActions({ invoice }: { invoice: InvoiceDetail }) {
                     method: method as "BANK_TRANSFER",
                     reference: reference || null,
                   }),
+                "Payment recorded",
                 )
               }
             >

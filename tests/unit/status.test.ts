@@ -13,6 +13,15 @@ describe("invoice status machine", () => {
     expect(canTransition("CANCELLED", "SEND")).toBe(false);
   });
 
+  it("allows resending only invoices that are still collectible", () => {
+    expect(transition("SENT", "RESEND")).toBe("SENT");
+    expect(transition("VIEWED", "RESEND")).toBe("VIEWED");
+    expect(transition("PARTIALLY_PAID", "RESEND")).toBe("PARTIALLY_PAID");
+    expect(canTransition("DRAFT", "RESEND")).toBe(false);
+    expect(canTransition("PAID", "RESEND")).toBe(false);
+    expect(canTransition("CANCELLED", "RESEND")).toBe(false);
+  });
+
   it("allows full payment to move directly from issued and partially paid states", () => {
     expect(transition("SENT", "PAY")).toBe("PAID");
     expect(transition("VIEWED", "PAY")).toBe("PAID");

@@ -10,7 +10,7 @@ export type InvoiceStatus = (typeof INVOICE_STATUSES)[number];
 export type DisplayInvoiceStatus = InvoiceStatus | "OVERDUE";
 
 export const INVOICE_ACTIONS = [
-  "SAVE", "SEND", "VIEW", "RECORD_PAYMENT", "PAY", "EDIT", "CANCEL", "DELETE",
+  "SAVE", "SEND", "RESEND", "VIEW", "RECORD_PAYMENT", "PAY", "EDIT", "CANCEL", "DELETE",
 ] as const;
 
 export type InvoiceAction = (typeof INVOICE_ACTIONS)[number];
@@ -24,6 +24,7 @@ const TRANSITIONS: Record<InvoiceStatus, Partial<Record<InvoiceAction, InvoiceSt
     DELETE: "DRAFT",
   },
   SENT: {
+    RESEND: "SENT",
     VIEW: "VIEWED",
     EDIT: "SENT",
     RECORD_PAYMENT: "PARTIALLY_PAID",
@@ -31,12 +32,14 @@ const TRANSITIONS: Record<InvoiceStatus, Partial<Record<InvoiceAction, InvoiceSt
     CANCEL: "CANCELLED",
   },
   VIEWED: {
+    RESEND: "VIEWED",
     EDIT: "VIEWED",
     RECORD_PAYMENT: "PARTIALLY_PAID",
     PAY: "PAID",
     CANCEL: "CANCELLED",
   },
   PARTIALLY_PAID: {
+    RESEND: "PARTIALLY_PAID",
     EDIT: "PARTIALLY_PAID",
     RECORD_PAYMENT: "PARTIALLY_PAID",
     PAY: "PAID",

@@ -7,15 +7,18 @@ import { ErrorCodes, fail, type FieldErrors, type Result } from "@/lib/errors/re
 import { invoicePayloadSchema } from "../schemas/invoice";
 import { recordPaymentSchema } from "../schemas/payment";
 import type { InvoiceDetail } from "../types/invoice";
+import type { InvoiceStatus } from "../domain/status";
 import {
   cancelInvoice,
   createInvoice,
   deleteInvoice,
   duplicateInvoice,
   listPayments,
+  markInvoiceViewed,
   recordPayment,
   sendInvoice,
   updateInvoice,
+  type SendInvoiceResult,
 } from "../server/invoice-service";
 
 function validationFailure(error: z.ZodError): Result<never> {
@@ -24,6 +27,13 @@ function validationFailure(error: z.ZodError): Result<never> {
     "Please correct the highlighted fields.",
     error.flatten().fieldErrors as FieldErrors,
   );
+}
+
+const invoiceIdSchema = z.string().uuid("Invalid invoice reference.");
+
+function parsedInvoiceId(id: unknown): string | null {
+  const parsed = invoiceIdSchema.safeParse(id);
+  return parsed.success ? parsed.data : null;
 }
 
 function revalidateInvoicePaths(id?: string) {
@@ -75,19 +85,39 @@ export async function listPaymentsAction() {
 }
 
 export async function deleteInvoiceAction(id: string): Promise<Result<{ id: string }>> {
-  const result = await deleteInvoice(id);
+  const invoiceId = parsedInvoiceId(id);
+  if (!invoiceId) return fail(ErrorCodes.VALIDATION, "Invalid invoice reference.");
+  const result = await deleteInvoice(invoiceId);
   if (result.ok) {
-    revalidateInvoicePaths(id);
-    revalidatePath(ROUTES.invoiceDetail(id));
+    revalidateInvoicePaths(invoiceId);
+    revalidatePath(ROUTES.invoiceDetail(invoiceId));
   }
   return result;
 }
 
-export async function sendInvoiceAction(
+export async function sendInvoiceAction(id: string): Promise<Result<SendInvoiceResult>> {
+  const invoiceId = parsedInvoiceId(id);
+  if (!invoiceId) return fail(ErrorCodes.VALIDATION, "Invalid invoice reference.");
+  const result = await sendInvoice(invoiceId);
+  if (result.ok) revalidateInvoicePaths(invoiceId);
+  return result;
+}
+
+export async function resendInvoiceAction(id: string): Promise<Result<SendInvoiceResult>> {
+  const invoiceId = parsedInvoiceId(id);
+  if (!invoiceId) return fail(ErrorCodes.VALIDATION, "Invalid invoice reference.");
+  const result = await sendInvoice(invoiceId, { resend: true });
+  if (result.ok) revalidateInvoicePaths(invoiceId);
+  return result;
+}
+
+export async function markInvoiceViewedAction(
   id: string,
-): Promise<Result<{ status: "DRAFT" | "SENT" | "VIEWED" | "PARTIALLY_PAID" | "PAID" | "CANCELLED"; emailQueued: boolean }>> {
-  const result = await sendInvoice(id);
-  if (result.ok) revalidateInvoicePaths(id);
+): Promise<Result<{ status: InvoiceStatus }>> {
+  const invoiceId = parsedInvoiceId(id);
+  if (!invoiceId) return fail(ErrorCodes.VALIDATION, "Invalid invoice reference.");
+  const result = await markInvoiceViewed(invoiceId);
+  if (result.ok) revalidateInvoicePaths(invoiceId);
   return result;
 }
 
@@ -97,13 +127,17 @@ export async function cancelInvoiceAction(
 ): Promise<Result<{ status: "DRAFT" | "SENT" | "VIEWED" | "PARTIALLY_PAID" | "PAID" | "CANCELLED" }>> {
   const parsed = z.string().trim().min(3, "Provide a reason of at least 3 characters").max(500).safeParse(reason);
   if (!parsed.success) return validationFailure(parsed.error);
-  const result = await cancelInvoice(id, parsed.data);
-  if (result.ok) revalidateInvoicePaths(id);
+  const invoiceId = parsedInvoiceId(id);
+  if (!invoiceId) return fail(ErrorCodes.VALIDATION, "Invalid invoice reference.");
+  const result = await cancelInvoice(invoiceId, parsed.data);
+  if (result.ok) revalidateInvoicePaths(invoiceId);
   return result;
 }
 
 export async function duplicateInvoiceAction(id: string): Promise<Result<InvoiceDetail>> {
-  const result = await duplicateInvoice(id);
+  const invoiceId = parsedInvoiceId(id);
+  if (!invoiceId) return fail(ErrorCodes.VALIDATION, "Invalid invoice reference.");
+  const result = await duplicateInvoice(invoiceId);
   if (result.ok) revalidateInvoicePaths(result.data.id);
   return result;
 }

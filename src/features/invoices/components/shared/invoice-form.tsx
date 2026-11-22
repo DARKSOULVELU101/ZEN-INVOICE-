@@ -308,11 +308,16 @@ export function InvoiceForm({
     if (selectedIntent === "send" && mode === "create") {
       const sent = await sendInvoiceAction(result.data.id);
       if (!sent.ok) {
-        toast.error(sent.error.message);
+        setIntentError(sent.error.message);
+        toast.error("Invoice saved as draft. Email not delivered.", { description: sent.error.message });
         setSubmitting(null);
         router.push(ROUTES.invoiceDetail(result.data.id));
         return;
       }
+      toast.success("Invoice sent with PDF", { description: "Delivered to the customer by email." });
+      router.push(ROUTES.invoiceDetail(result.data.id));
+      router.refresh();
+      return;
     }
 
     toast.success(mode === "create" ? "Invoice created" : "Invoice updated");
@@ -777,7 +782,7 @@ export function InvoiceForm({
             {mode === "create" ? (
               <Button type="button" onClick={onSaveAndSend} disabled={Boolean(submitting)}>
                 <Check aria-hidden="true" />
-                {submitting === "send" ? "Sending…" : "Save & send"}
+                {submitting === "send" ? "Sending with PDF…" : "Save & send invoice"}
               </Button>
             ) : null}
           </div>

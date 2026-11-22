@@ -32,7 +32,7 @@ import { queryToSearchParams, type InvoiceListQuery } from "@/features/invoices/
 import type { CustomerOption } from "@/features/partners/types/customer";
 import type { InvoiceListItem } from "@/features/invoices/types/invoice";
 import {
-  deleteInvoiceAction, duplicateInvoiceAction, sendInvoiceAction,
+  deleteInvoiceAction, duplicateInvoiceAction, resendInvoiceAction, sendInvoiceAction,
 } from "@/features/invoices/actions/invoice-actions";
 import { InvoiceListCard } from "./invoice-list-card";
 
@@ -129,14 +129,18 @@ export function InvoiceListClient({
   );
 
   const handleSend = React.useCallback(
-    async (id: string) => {
+    async (id: string, resend = false) => {
       setPending(true);
-      const result = await sendInvoiceAction(id);
+      const result = resend ? await resendInvoiceAction(id) : await sendInvoiceAction(id);
       setPending(false);
-      if (result.ok) toast.success("Invoice sent", { description: "The email has been queued." });
-      else toast.error(result.error.message);
+      if (result.ok) {
+        toast.success(resend ? "Invoice resent with PDF" : "Invoice sent with PDF", {
+          description: "Delivered to the customer by email.",
+        });
+        router.refresh();
+      } else toast.error(result.error.message);
     },
-    [],
+    [router],
   );
 
   const handleDuplicate = React.useCallback(
@@ -237,10 +241,18 @@ export function InvoiceListClient({
         header: () => <span className="sr-only">Actions</span>,
         cell: (info) => {
           const invoice = info.row.original;
+          const canSendNow = canTransition(invoice.status, "SEND");
+          const canResendNow = canTransition(invoice.status, "RESEND");
           const actions = [
             { label: "View details", onSelect: () => handleView(invoice.id) },
             { label: "Edit", onSelect: () => handleEdit(invoice.id), disabled: !isEditable(invoice.status) || pending },
-            { label: "Send", onSelect: () => void handleSend(invoice.id), disabled: !canTransition(invoice.status, "SEND") || pending },
+            ...(canSendNow || canResendNow
+              ? [{
+                label: canSendNow ? "Send" : "Resend",
+                onSelect: () => void handleSend(invoice.id, canResendNow),
+                disabled: pending,
+              }]
+              : []),
             { label: "Duplicate", onSelect: () => void handleDuplicate(invoice.id), disabled: pending },
             {
               label: "Delete draft",
@@ -434,12 +446,13 @@ export function InvoiceListClient({
                   key={invoice.id}
                   invoice={invoice}
                   canEdit={isEditable(invoice.status)}
-                  canSend={canTransition(invoice.status, "SEND")}
+                  canSend={canTransition(invoice.status, "SEND") || canTransition(invoice.status, "RESEND")}
+                  sendLabel={canTransition(invoice.status, "SEND") ? "Send" : "Resend"}
                   canDelete={isDeletable(invoice.status)}
                   pending={pending}
                   onView={() => handleView(invoice.id)}
                   onEdit={() => handleEdit(invoice.id)}
-                  onSend={() => void handleSend(invoice.id)}
+                  onSend={() => void handleSend(invoice.id, canTransition(invoice.status, "RESEND"))}
                   onDuplicate={() => void handleDuplicate(invoice.id)}
                   onDelete={() => setConfirmId(invoice.id)}
                 />

@@ -10,6 +10,7 @@ export function InvoiceListCard({
   invoice,
   canEdit,
   canSend,
+  sendLabel = "Send",
   canDelete,
   pending,
   onView,
@@ -21,6 +22,7 @@ export function InvoiceListCard({
   invoice: InvoiceListItem;
   canEdit: boolean;
   canSend: boolean;
+  sendLabel?: string;
   canDelete: boolean;
   pending: boolean;
   onView: () => void;
@@ -32,7 +34,7 @@ export function InvoiceListCard({
   const actions: MenuAction[] = [
     { label: "View details", onSelect: onView },
     { label: "Edit", onSelect: onEdit, disabled: !canEdit || pending },
-    { label: "Send", onSelect: onSend, disabled: !canSend || pending },
+    { label: sendLabel, onSelect: onSend, disabled: !canSend || pending },
     { label: "Duplicate", onSelect: onDuplicate, disabled: pending },
     { label: "Delete draft", onSelect: onDelete, disabled: !canDelete || pending, destructive: true },
   ];

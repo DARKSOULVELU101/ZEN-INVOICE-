@@ -123,6 +123,9 @@ export interface InvoiceDetail extends InvoiceListItem {
   cancelReason: string | null;
   branchId: string | null;
   customerEmail: string | null;
+  customerCompany: string | null;
+  emailDeliveryStatus: "NOT_SENT" | "DELIVERED" | "FAILED";
+  emailDeliveredAt: string | null;
   items: InvoiceLineDto[];
   events: InvoiceEventDto[];
   payments: PaymentDto[];
